@@ -3,8 +3,10 @@ export type BuildingId = 'hospital' | 'school' | 'museum' | 'sports' | 'society'
 export type StatusLevel = 'nominal' | 'warning' | 'critical' | 'standby';
 
 export type PuzzleType = 'cipher' | 'biometric' | 'frequency' | 'matrix' | 'relay';
+export type PuzzleMechanic = 'timetable' | 'triage';
 
 export interface CTFData {
+  evidence?: { source: string; excerpt: string; image?: string; imageAlt?: string }[];
   id: string;
   slot: '01' | '02';
   label: string; // e.g., "[ MEDICAL TERMINAL ]", "[ RECORD ARCHIVE ]"
@@ -13,6 +15,7 @@ export interface CTFData {
   description: string;
   clue: string;
   puzzleType: PuzzleType;
+  puzzleMechanic?: PuzzleMechanic;
   challengePrompt: string;
   solutionKey: string;
   options?: string[]; // for quick interactive solve
@@ -36,7 +39,7 @@ export interface ResidentRecord {
   lastUpdate: string;
   status: 'NOMINAL' | 'FLAGGED FOR PURGE' | 'UNACCOUNTED' | 'EXPUNGED';
   buildingOrigin: BuildingId;
-  encryptedFragmentsRecovered: number; // 0, 1, or 2
+  encryptedFragmentsRecovered: number; // 0 or 1 for the single CTF in each building
 }
 
 export interface BuildingData {
@@ -64,7 +67,7 @@ export interface BuildingData {
     roomType: 'medical' | 'classroom' | 'archive' | 'gym' | 'residential';
     ambientDetails: string[];
   };
-  ctfs: [CTFData, CTFData];
+  ctfs: CTFData[];
   residentId: string;
 }
 

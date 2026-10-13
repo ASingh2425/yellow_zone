@@ -1,1244 +1,543 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { BuildingData, CTFData } from '../types/protocol';
+import { BuildingData, BuildingId, CTFData } from '../types/protocol';
 import { sound } from '../utils/sound';
-import { 
-  Move, 
-  MousePointer, 
-  CheckCircle2, 
-  Lock,
-  ArrowLeft,
-  RotateCcw,
-  Zap
-} from 'lucide-react';
+import { CheckCircle2, Database, FileSearch, Lock, Zap } from 'lucide-react';
 
 interface ThreeRoomFPPProps {
   building: BuildingData;
   onInteractCTF: (ctf: CTFData) => void;
+  onOpenDataset?: () => void;
   onReturnToMap: () => void;
 }
 
-export const ThreeRoomFPP: React.FC<ThreeRoomFPPProps> = ({
-  building,
-  onInteractCTF,
-  onReturnToMap
-}) => {
+type Prompt = { type: 'ctf' | 'dataset' | 'exit'; target?: CTFData; message: string } | null;
+
+const THEMES: Record<string, { bg: number; wall: number; floor: number; primary: number; accent: number; label: string; detail: string }> = {
+  hospital: { bg: 0x07151a, wall: 0x12313a, floor: 0x0d252c, primary: 0x2dd4bf, accent: 0xef4444, label: 'MEDICAL TRIAGE', detail: 'VITALS // PATIENT MONITORING' },
+  school: { bg: 0x081522, wall: 0x172f45, floor: 0x101f2e, primary: 0x38bdf8, accent: 0xfbbf24, label: 'LEARNING HUB', detail: 'ATTENDANCE // ACADEMIC RECORDS' },
+  museum: { bg: 0x10091b, wall: 0x26173b, floor: 0x140d24, primary: 0xfacc15, accent: 0xc084fc, label: 'ARCHIVE GALLERY', detail: 'ARTIFACTS // HISTORICAL RECORDS' },
+  sports: { bg: 0x160d07, wall: 0x302014, floor: 0x20130a, primary: 0xfb923c, accent: 0xfacc15, label: 'ATHLETICS CONTROL', detail: 'LIVE ARENA // PERFORMANCE DATA' },
+  society: { bg: 0x150b1b, wall: 0x2b1734, floor: 0x1b1022, primary: 0xe879f9, accent: 0xfacc15, label: 'RESIDENT SERVICES', detail: 'OCCUPANCY // COMMUNITY RECORDS' },
+};
+
+const ROOM_PANEL_COPY: Record<BuildingId, { leftTitle: string; rightTitle: string; leftStatus: string; rightStatus: string; footer: string }> = {
+  hospital: { leftTitle: 'MEDICAL // TRIAGE', rightTitle: 'WARD STATE // H-017', leftStatus: 'WARD BUS // UNSTABLE', rightStatus: 'CASE H-017 // SEALED', footer: 'PATIENT RECONCILIATION // LOCAL CLINICAL FEED' },
+  school: { leftTitle: 'ACADEMY // SCHEDULE', rightTitle: 'EDU-CORE // AUDIT', leftStatus: 'SCHEDULE CACHE // CONFLICT', rightStatus: 'CLASS REGISTER // DEGRADED', footer: 'ACADEMIC SYSTEMS // LOCAL ARCHIVE FEED' },
+  museum: { leftTitle: 'ARCHIVE // GALLERY 09', rightTitle: 'CONSERVATION // LL-09', leftStatus: 'ORIGINAL IMAGE // PRESERVED', rightStatus: 'ACQUISITION LOG // SEALED', footer: 'HERITAGE CONSERVATION // LOCAL ARCHIVE FEED' },
+  sports: { leftTitle: 'ARENA // RELAY CONTROL', rightTitle: 'GHOST FRAMES // Y-04', leftStatus: 'UNREGISTERED PACKETS', rightStatus: 'SCOREBOARD BUFFER // LIVE', footer: 'ATHLETIC RELAY // LOCAL TELEMETRY FEED' },
+  society: { leftTitle: 'RESIDENTIAL // THETA', rightTitle: 'DOOR CACHE // Y-05', leftStatus: 'OCCUPANCY INDEX // DEGRADED', rightStatus: 'RESIDENT LEDGER // SEALED', footer: 'RESIDENT SERVICES // LOCAL REGISTRY FEED' },
+};
+
+export const ThreeRoomFPP: React.FC<ThreeRoomFPPProps> = ({ building, onInteractCTF, onOpenDataset, onReturnToMap }) => {
   const mountRef = useRef<HTMLDivElement>(null);
-  const [activePrompt, setActivePrompt] = useState<{
-    type: 'ctf' | 'exit';
-    target?: CTFData;
-    message: string;
-  } | null>(null);
-
-  const [compassHeading, setCompassHeading] = useState(0);
-  const [playerCoord, setPlayerCoord] = useState({ x: 0, z: 0 });
-  const [isSprinting, setIsSprinting] = useState(false);
-
-  // Persistent reference to runtime state
+  const roomIdRef = useRef<BuildingId | null>(null);
+  const callbacksRef = useRef({ onInteractCTF, onOpenDataset, onReturnToMap });
+  callbacksRef.current = { onInteractCTF, onOpenDataset, onReturnToMap };
   const stateRef = useRef({
     keys: { forward: false, backward: false, left: false, right: false, sprint: false },
-    isMouseDown: false,
-    prevMouseX: 0,
-    prevMouseY: 0,
-    cameraYaw: Math.PI, // Facing into the room (towards -Z)
-    cameraPitch: 0,
-    playerPos: new THREE.Vector3(0, 1.7, 5.5),
-    velocity: new THREE.Vector3(0, 0, 0),
-    headBobTimer: 0,
-    stepDistance: 0,
-    activePrompt: null as { type: 'ctf' | 'exit'; target?: CTFData; message: string } | null,
-    onInteractCTF,
-    onReturnToMap,
-    building
+    yaw: 0,
+    pitch: 0,
+    mouseDown: false,
+    lastX: 0,
+    lastY: 0,
+    pos: new THREE.Vector3(0, 1.65, 2.35),
+    prompt: null as Prompt,
   });
-
-  stateRef.current.onInteractCTF = onInteractCTF;
-  stateRef.current.onReturnToMap = onReturnToMap;
-  stateRef.current.building = building;
+  const [activePrompt, setActivePrompt] = useState<Prompt>(null);
+  const [sprinting, setSprinting] = useState(false);
+  const visibleCTF = building.ctfs.slice(0, 1)[0];
+  const theme = THEMES[building.id] ?? THEMES.hospital;
 
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
+    const state = stateRef.current;
+    // Only reset the view when entering a different building. If a CTF solve refreshes
+    // the scene to swap the terminal texture, preserve the player's position and heading.
+    if (roomIdRef.current !== building.id) {
+      state.pos.set(0, 1.65, 2.35);
+      state.yaw = 0;
+      state.pitch = 0;
+      roomIdRef.current = building.id;
+    }
+    state.prompt = null;
+    setActivePrompt(null);
 
-    // Reset player position when entering building
-    stateRef.current.playerPos.set(0, 1.7, 5.8);
-    stateRef.current.velocity.set(0, 0, 0);
-    stateRef.current.cameraYaw = Math.PI; // Face forward into room
-    stateRef.current.cameraPitch = 0;
-
-    // 1. Scene, Camera, Renderer
     const scene = new THREE.Scene();
-    
-    // Choose specific background fog color based on building environment
-    const getBuildingAtmosphere = () => {
-      switch (building.id) {
-        case 'hospital':
-          return { bg: 0x051318, fog: 0.04, primary: 0x06b6d4, accent: 0x10b981 };
-        case 'school':
-          return { bg: 0x081119, fog: 0.04, primary: 0x38bdf8, accent: 0xf59e0b };
-        case 'museum':
-          return { bg: 0x0e071c, fog: 0.035, primary: 0xfacc15, accent: 0xa855f7 };
-        case 'sports':
-          return { bg: 0x140d07, fog: 0.04, primary: 0xf97316, accent: 0xfacc15 };
-        case 'society':
-          return { bg: 0x110915, fog: 0.045, primary: 0xd946ef, accent: 0xfacc15 };
-      }
-    };
-
-    const atmo = getBuildingAtmosphere();
-    scene.background = new THREE.Color(atmo.bg);
-    scene.fog = new THREE.FogExp2(atmo.bg, atmo.fog);
-
-    const camera = new THREE.PerspectiveCamera(
-      70,
-      container.clientWidth / container.clientHeight,
-      0.1,
-      100
-    );
-    camera.position.copy(stateRef.current.playerPos);
-
+    scene.background = new THREE.Color(theme.bg);
+    scene.fog = new THREE.FogExp2(theme.bg, 0.025);
+    const camera = new THREE.PerspectiveCamera(72, container.clientWidth / container.clientHeight, 0.1, 70);
+    camera.position.copy(state.pos);
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    // Cap render resolution to avoid 4K/high-DPI devices multiplying GPU work.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.35));
     renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // The room has many emissive details and point lights; real-time soft shadows
+    // were the most expensive pass and are not essential to navigation.
+    renderer.shadowMap.enabled = false;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
+    renderer.toneMappingExposure = 1.25;
     container.appendChild(renderer.domElement);
 
-    // 2. Dynamic Room Dimensions & Shell
-    const roomWidth = 14;
-    const roomLength = 16;
-    const roomHeight = 4.4;
-
-    // Lighting setup specific to the building
-    const ambientLight = new THREE.AmbientLight(atmo.bg, 1.2);
-    scene.add(ambientLight);
-
-    // Main Overhead fixture
-    const mainLight = new THREE.PointLight(atmo.primary, 1.8, 22, 1.1);
-    mainLight.position.set(0, roomHeight - 0.5, 0);
-    mainLight.castShadow = true;
-    scene.add(mainLight);
-
-    // Secondary fill light
-    const fillLight = new THREE.PointLight(atmo.accent, 1.2, 18, 1.3);
-    fillLight.position.set(0, 2.5, -4);
-    scene.add(fillLight);
-
-    // 3. Unique Environment & Materials Generation
-    const animatedObjects: { update: (time: number, delta: number) => void }[] = [];
-
-    // Helper: Texture generator for unique floors
-    const generateFloorTexture = (type: string) => {
-      const canvas = document.createElement('canvas');
-      canvas.width = 512;
-      canvas.height = 512;
+    const roomW = 10;
+    const roomL = 10;
+    const roomH = 3.8;
+    const materials: THREE.Material[] = [];
+    const textures: THREE.Texture[] = [];
+    const interactive: { type: 'ctf' | 'dataset' | 'exit'; pos: THREE.Vector3; ctf?: CTFData }[] = [];
+    const blockers: { minX: number; maxX: number; minZ: number; maxZ: number }[] = [];
+    const addBlocker = (minX: number, maxX: number, minZ: number, maxZ: number) => {
+      blockers.push({ minX, maxX, minZ, maxZ });
+    };
+    const addMaterial = <T extends THREE.Material,>(m: T): T => { materials.push(m); return m; };
+    const box = (w: number, h: number, d: number, color: number, x: number, y: number, z: number, opts: { metalness?: number; roughness?: number; emissive?: number; emissiveIntensity?: number } = {}) => {
+      const mat = addMaterial(new THREE.MeshStandardMaterial({ color, metalness: opts.metalness ?? 0.45, roughness: opts.roughness ?? 0.48, emissive: opts.emissive ?? 0x000000, emissiveIntensity: opts.emissiveIntensity ?? 0 }));
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+      mesh.position.set(x, y, z); mesh.castShadow = false; mesh.receiveShadow = false; scene.add(mesh); return mesh;
+    };
+    const pointLight = (color: number, intensity: number, distance: number, x: number, y: number, z: number) => {
+      const l = new THREE.PointLight(color, intensity, distance, 1.8); l.position.set(x, y, z); scene.add(l); return l;
+    };
+    const makeScreenTexture = (kind: 'ctf' | 'dataset' | 'scoreboard') => {
+      const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 360;
       const ctx = canvas.getContext('2d')!;
-
-      if (type === 'hospital') {
-        // Sterile medical teal/white tile
-        ctx.fillStyle = '#08171d';
-        ctx.fillRect(0, 0, 512, 512);
-        ctx.strokeStyle = '#0e2b34';
-        ctx.lineWidth = 2;
-        for (let i = 0; i <= 512; i += 64) {
-          ctx.strokeRect(i, 0, 64, 512);
-        }
-        // Emergency triage guide stripes
-        ctx.fillStyle = '#0d9488';
-        ctx.fillRect(230, 0, 52, 512);
-        ctx.fillStyle = '#10b981';
-        ctx.fillRect(250, 0, 12, 512);
-      } else if (type === 'school') {
-        // Institutional classroom composite tile
-        ctx.fillStyle = '#0f1722';
-        ctx.fillRect(0, 0, 512, 512);
-        ctx.strokeStyle = '#1b2a3d';
-        ctx.lineWidth = 3;
-        for (let i = 0; i <= 512; i += 128) {
-          for (let j = 0; j <= 512; j += 128) {
-            ctx.strokeRect(i, j, 128, 128);
+      const tex = new THREE.CanvasTexture(canvas); tex.colorSpace = THREE.SRGBColorSpace; textures.push(tex);
+      const draw = (time = 0) => {
+        ctx.fillStyle = '#071019'; ctx.fillRect(0, 0, 640, 360);
+        ctx.fillStyle = `#${theme.primary.toString(16).padStart(6, '0')}`; ctx.fillRect(0, 0, 640, 8);
+        ctx.strokeStyle = `#${theme.primary.toString(16).padStart(6, '0')}`; ctx.lineWidth = 2; ctx.strokeRect(14, 14, 612, 332);
+        ctx.fillStyle = '#e5edf5'; ctx.font = 'bold 29px monospace';
+        ctx.fillText(kind === 'ctf' ? 'MANU // SOCIAL TRACE NODE' : kind === 'dataset' ? 'MANU // SOCIAL TRACE ARCHIVE' : 'YELLOW ZONE // ARENA FEED', 30, 56);
+        ctx.fillStyle = `#${theme.accent.toString(16).padStart(6, '0')}`; ctx.font = 'bold 20px monospace';
+        if (kind === 'ctf') {
+          ctx.fillText('ACCOUNT MIRROR NETWORK', 30, 112);
+          ctx.fillStyle = visibleCTF?.completed ? '#34d399' : '#fbbf24'; ctx.font = 'bold 24px monospace';
+          ctx.fillText(visibleCTF?.completed ? 'STATUS: ARCHIVE ONLINE' : 'STATUS: MIRROR READY', 30, 162);
+          ctx.fillStyle = '#91a5b8'; ctx.font = '17px monospace'; ctx.fillText('INTERACT TO INSPECT SOCIAL EVIDENCE', 30, 214);
+          ctx.fillText(`NODE ${building.code} // ${visibleCTF?.slot ?? '01'}`, 30, 252);
+        } else if (kind === 'dataset') {
+          ctx.fillText(`${building.name} // DATASET`, 30, 112);
+          ctx.fillStyle = visibleCTF?.completed ? '#34d399' : '#fbbf24'; ctx.font = 'bold 24px monospace';
+          ctx.fillText(visibleCTF?.completed ? 'ACCESS: UNLOCKED' : 'ACCESS: LOCKED', 30, 160);
+          ctx.fillStyle = '#91a5b8'; ctx.font = '18px monospace';
+          if (visibleCTF?.completed) {
+            ctx.fillText('RECORDS: AVAILABLE', 30, 202);
+            ctx.fillText('SOURCE: LOCAL SANCTUARY ARCHIVE', 30, 238);
+            ctx.fillText('INTERACT TO INSPECT EVIDENCE', 30, 278);
+            ctx.fillStyle = '#34d399'; ctx.fillRect(30, 310, 400 + Math.sin(time * 2) * 20, 5);
+          } else {
+            ctx.fillText('ENCRYPTED RECORDS DETECTED', 30, 210);
+            ctx.fillText('REVIEW POSTS // STORIES // NOTES', 30, 250);
+            ctx.fillStyle = '#fbbf24'; ctx.fillRect(30, 290, 390, 5);
+            ctx.fillStyle = '#fbbf24'; ctx.font = 'bold 17px monospace'; ctx.fillText('DATA SEALED // NO ACCESS', 30, 322);
           }
+        } else {
+          ctx.fillText('ARENA SYSTEMS ONLINE', 30, 112);
+          ctx.fillStyle = '#fbbf24'; ctx.font = 'bold 46px monospace'; ctx.fillText('Y-04', 30, 190);
+          ctx.fillStyle = '#91a5b8'; ctx.font = '18px monospace'; ctx.fillText('TRAINING ARENA // PERFORMANCE FEED', 30, 242);
+          ctx.fillStyle = '#34d399'; ctx.fillText('SYSTEM NOMINAL', 30, 294);
         }
-        ctx.fillStyle = 'rgba(56, 189, 248, 0.15)';
-        ctx.fillRect(64, 64, 384, 384);
-      } else if (type === 'museum') {
-        // Polished obsidian dark marble
-        ctx.fillStyle = '#090511';
-        ctx.fillRect(0, 0, 512, 512);
-        ctx.strokeStyle = '#27173e';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(16, 16, 480, 480);
-        ctx.strokeStyle = '#eab308';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(256, 256, 180, 0, Math.PI * 2);
-        ctx.stroke();
-      } else if (type === 'sports') {
-        // Synthetic athletic running track & hardwood
-        ctx.fillStyle = '#180e07';
-        ctx.fillRect(0, 0, 512, 512);
-        // Track lanes
-        ctx.strokeStyle = '#ea580c';
-        ctx.lineWidth = 14;
-        ctx.strokeRect(30, 30, 452, 452);
-        ctx.strokeStyle = '#facc15';
-        ctx.lineWidth = 4;
-        ctx.strokeRect(70, 70, 372, 372);
-      } else {
-        // Society: Grated industrial residential deck plates
-        ctx.fillStyle = '#100a14';
-        ctx.fillRect(0, 0, 512, 512);
-        ctx.strokeStyle = '#2a1a33';
-        ctx.lineWidth = 4;
-        for (let i = 0; i <= 512; i += 32) {
-          ctx.beginPath();
-          ctx.moveTo(i, 0);
-          ctx.lineTo(i, 512);
-          ctx.stroke();
-        }
-        ctx.fillStyle = 'rgba(217, 70, 239, 0.15)';
-        ctx.fillRect(100, 100, 312, 312);
-      }
-
-      const tex = new THREE.CanvasTexture(canvas);
-      tex.wrapS = THREE.RepeatWrapping;
-      tex.wrapT = THREE.RepeatWrapping;
-      tex.repeat.set(4, 4);
-      return tex;
+        tex.needsUpdate = true;
+      };
+      draw(); return { tex, draw };
     };
 
-    // Floor Mesh
-    const floorTexture = generateFloorTexture(building.id);
-    const floorMat = new THREE.MeshStandardMaterial({
-      map: floorTexture,
-      roughness: building.id === 'museum' ? 0.15 : 0.65,
-      metalness: building.id === 'museum' ? 0.8 : 0.35
-    });
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(roomWidth, roomLength), floorMat);
-    floor.rotation.x = -Math.PI / 2;
-    floor.receiveShadow = true;
-    scene.add(floor);
+    // Compact architectural shell. The south door (+Z) stays behind the player on entry.
+    scene.add(new THREE.HemisphereLight(0xb9d9ee, theme.floor, 1.55));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.35); keyLight.position.set(-3, 7, 4); keyLight.castShadow = false; scene.add(keyLight);
+    // Keep the two principal lights; emissive fixtures supply local color without
+    // multiplying per-pixel point-light cost on lower-end laptops.
+    pointLight(theme.primary, 12, 13, -2.7, 3.0, -2.5);
+    pointLight(theme.accent, 6, 9, 3.0, 2.5, 0.8);
+    const floorMat = addMaterial(new THREE.MeshStandardMaterial({ color: theme.floor, metalness: 0.55, roughness: 0.4 }));
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(roomW, roomL), floorMat); floor.rotation.x = -Math.PI / 2; scene.add(floor);
+    const wallMat = addMaterial(new THREE.MeshStandardMaterial({ color: theme.wall, metalness: 0.35, roughness: 0.62 }));
+    const addWall = (w: number, h: number, d: number, x: number, y: number, z: number) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMat); m.position.set(x,y,z); scene.add(m); };
+    addWall(roomW, roomH, 0.22, 0, roomH / 2, -roomL / 2);
+    addWall(0.22, roomH, roomL, -roomW / 2, roomH / 2, 0);
+    addWall(0.22, roomH, roomL, roomW / 2, roomH / 2, 0);
+    addWall(roomW, roomH, 0.22, 0, roomH / 2, roomL / 2);
+    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(roomW, roomL), addMaterial(new THREE.MeshStandardMaterial({ color: 0x111923, metalness: 0.35, roughness: 0.8 })));
+    ceiling.rotation.x = Math.PI / 2; ceiling.position.y = roomH; scene.add(ceiling);
 
-    // Ceiling
-    const ceilingMat = new THREE.MeshStandardMaterial({
-      color: 0x090c12,
-      roughness: 0.8,
-      metalness: 0.3
-    });
-    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(roomWidth, roomLength), ceilingMat);
-    ceiling.position.y = roomHeight;
-    ceiling.rotation.x = Math.PI / 2;
-    scene.add(ceiling);
+    // Glowing edge strips make the compact space readable rather than dark and empty.
+    box(roomW - 0.5, 0.045, 0.08, theme.primary, 0, 3.45, -4.78, { emissive: theme.primary, emissiveIntensity: 0.9 });
+    box(0.08, 0.045, roomL - 0.5, theme.primary, -4.78, 3.45, 0, { emissive: theme.primary, emissiveIntensity: 0.9 });
+    box(0.08, 0.045, roomL - 0.5, theme.primary, 4.78, 3.45, 0, { emissive: theme.primary, emissiveIntensity: 0.9 });
+    box(2.3, 2.7, 0.32, 0x101722, 0, 1.35, 4.78, { metalness: 0.8 });
+    box(1.9, 0.12, 0.36, theme.accent, 0, 2.55, 4.55, { emissive: theme.accent, emissiveIntensity: 0.7 });
+    // Refined entrance details: illuminated jambs, status indicators and a tactile threshold strip.
+    for (const x of [-1.18, 1.18]) {
+      box(0.075, 2.55, 0.11, theme.primary, x, 1.35, 4.53, { emissive: theme.primary, emissiveIntensity: 0.95 });
+      box(0.16, 0.12, 0.12, theme.accent, x, 2.68, 4.51, { emissive: theme.accent, emissiveIntensity: 0.8 });
+    }
+    for (let i = 0; i < 7; i++) box(0.62, 0.018, 0.07, i % 2 === 0 ? theme.accent : 0x263746, -1.86 + i * 0.62, 0.025, 3.82, { emissive: i % 2 === 0 ? theme.accent : 0x000000, emissiveIntensity: 0.35 });
 
-    // Wall Material matching building theme
-    const getWallColor = () => {
-      switch (building.id) {
-        case 'hospital': return 0x091c24; // clinical teal
-        case 'school': return 0x0c1926; // classroom navy/slate
-        case 'museum': return 0x140a25; // regal indigo
-        case 'sports': return 0x1f140c; // industrial sports carbon
-        case 'society': return 0x1a0d20; // dark dystopian residential
-      }
-    };
-
-    const wallMat = new THREE.MeshStandardMaterial({
-      color: getWallColor(),
-      roughness: 0.6,
-      metalness: 0.4
-    });
-
-    // 4 Walls
-    const northWall = new THREE.Mesh(new THREE.PlaneGeometry(roomWidth, roomHeight), wallMat);
-    northWall.position.set(0, roomHeight / 2, -roomLength / 2);
-    northWall.receiveShadow = true;
-    scene.add(northWall);
-
-    const southWall = new THREE.Mesh(new THREE.PlaneGeometry(roomWidth, roomHeight), wallMat);
-    southWall.position.set(0, roomHeight / 2, roomLength / 2);
-    southWall.rotation.y = Math.PI;
-    southWall.receiveShadow = true;
-    scene.add(southWall);
-
-    const eastWall = new THREE.Mesh(new THREE.PlaneGeometry(roomLength, roomHeight), wallMat);
-    eastWall.position.set(roomWidth / 2, roomHeight / 2, 0);
-    eastWall.rotation.y = -Math.PI / 2;
-    eastWall.receiveShadow = true;
-    scene.add(eastWall);
-
-    const westWall = new THREE.Mesh(new THREE.PlaneGeometry(roomLength, roomHeight), wallMat);
-    westWall.position.set(-roomWidth / 2, roomHeight / 2, 0);
-    westWall.rotation.y = Math.PI / 2;
-    westWall.receiveShadow = true;
-    scene.add(westWall);
-
-    // EXIT AIRLOCK GATE ON SOUTH WALL
-    const airlockMat = new THREE.MeshStandardMaterial({ color: 0x1e2736, metalness: 0.8 });
-    const airlock = new THREE.Mesh(new THREE.BoxGeometry(3.4, 3.2, 0.3), airlockMat);
-    airlock.position.set(0, 1.6, roomLength / 2 - 0.15);
-    scene.add(airlock);
-
-    // Hazard bar on airlock
-    const hazardMat = new THREE.MeshBasicMaterial({ color: 0xfacc15 });
-    const hazard = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.15, 0.22), hazardMat);
-    hazard.position.set(0, 2.3, roomLength / 2 - 0.2);
-    scene.add(hazard);
-
-    // Text Sprite Helper
-    const createBillboardSprite = (text: string, sub: string, color: string) => {
-      const canvas = document.createElement('canvas');
-      canvas.width = 512;
-      canvas.height = 256;
-      const ctx = canvas.getContext('2d')!;
-      
-      ctx.fillStyle = 'rgba(8, 12, 18, 0.9)';
-      ctx.fillRect(0, 0, 512, 256);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 6;
-      ctx.strokeRect(6, 6, 500, 244);
-
-      ctx.fillStyle = color;
-      ctx.font = 'bold 36px Rajdhani, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(text, 256, 95);
-
-      ctx.fillStyle = '#cbd5e1';
-      ctx.font = '24px "JetBrains Mono", monospace';
-      ctx.fillText(sub, 256, 170);
-
-      const texture = new THREE.CanvasTexture(canvas);
-      const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
-      const sprite = new THREE.Sprite(spriteMat);
-      sprite.scale.set(3, 1.5, 1);
-      return sprite;
-    };
-
-    const airlockSign = createBillboardSprite('[ AIRLOCK PORTAL ]', 'PRESS [E] TO RETURN TO MAP', '#facc15');
-    airlockSign.position.set(0, 2.9, roomLength / 2 - 0.4);
-    scene.add(airlockSign);
-
-    // ==========================================
-    // 4. DISTINCT THEMED ARCHITECTURE & MOVEMENT
-    // ==========================================
-
-    switch (building.id) {
-      // ----------------------------------------
-      // 1. HOSPITAL: Quarantine Pod & Pulsing ECG
-      // ----------------------------------------
-      case 'hospital': {
-        // Central Triage Pod with Patient Bed
-        const podBase = new THREE.Mesh(
-          new THREE.CylinderGeometry(1.6, 1.8, 0.8, 16),
-          new THREE.MeshStandardMaterial({ color: 0x0e2733, metalness: 0.9, roughness: 0.2 })
-        );
-        podBase.position.set(0, 0.4, -1);
-        scene.add(podBase);
-
-        // Medical Stasis Capsule Glass
-        const glassCapsule = new THREE.Mesh(
-          new THREE.CylinderGeometry(1.2, 1.2, 1.8, 16, 1, true),
-          new THREE.MeshPhysicalMaterial({ color: 0x5eead4, transparent: true, opacity: 0.35, roughness: 0.1, transmission: 0.9 })
-        );
-        glassCapsule.position.set(0, 1.4, -1);
-        scene.add(glassCapsule);
-
-        // Animated Rotating Surgical Light Fixture in ceiling
-        const surgicalRing = new THREE.Mesh(
-          new THREE.TorusGeometry(1.4, 0.08, 8, 24),
-          new THREE.MeshBasicMaterial({ color: 0x22d3ee })
-        );
-        surgicalRing.rotation.x = Math.PI / 2;
-        surgicalRing.position.set(0, roomHeight - 0.6, -1);
-        scene.add(surgicalRing);
-
-        // Holographic ECG Vitals Screen on Front Wall
-        const ecgCanvas = document.createElement('canvas');
-        ecgCanvas.width = 512;
-        ecgCanvas.height = 256;
-        const ecgCtx = ecgCanvas.getContext('2d')!;
-        const ecgTexture = new THREE.CanvasTexture(ecgCanvas);
-        const ecgScreen = new THREE.Mesh(
-          new THREE.PlaneGeometry(3.6, 1.8),
-          new THREE.MeshBasicMaterial({ map: ecgTexture, transparent: true })
-        );
-        ecgScreen.position.set(0, 2.4, -roomLength / 2 + 0.1);
-        scene.add(ecgScreen);
-
-        // Floating bio-particles
-        const particleGeo = new THREE.BufferGeometry();
-        const pCount = 60;
-        const pPositions = new Float32Array(pCount * 3);
-        for (let i = 0; i < pCount; i++) {
-          pPositions[i * 3] = (Math.random() - 0.5) * 2;
-          pPositions[i * 3 + 1] = 0.5 + Math.random() * 2.0;
-          pPositions[i * 3 + 2] = -1 + (Math.random() - 0.5) * 2;
-        }
-        particleGeo.setAttribute('position', new THREE.BufferAttribute(pPositions, 3));
-        const particleMat = new THREE.PointsMaterial({ color: 0x10b981, size: 0.06, transparent: true, opacity: 0.8 });
-        const particles = new THREE.Points(particleGeo, particleMat);
-        scene.add(particles);
-
-        // EERIE: flickering surgical lamp + red quarantine beacon
-        const flickerSurgical = new THREE.PointLight(0x9ff5e8, 2.2, 12, 1.4);
-        flickerSurgical.position.set(0, roomHeight - 0.8, -1);
-        scene.add(flickerSurgical);
-        const quarantineBeacon = new THREE.PointLight(0xef2b2b, 1.4, 16, 1.2);
-        quarantineBeacon.position.set(-4.5, 3.1, 3.5);
-        scene.add(quarantineBeacon);
-        const beaconMesh = new THREE.Mesh(
-          new THREE.SphereGeometry(0.12, 12, 12),
-          new THREE.MeshBasicMaterial({ color: 0xef4444 })
-        );
-        beaconMesh.position.set(-4.5, 3.4, 3.5);
-        scene.add(beaconMesh);
-        // EERIE: hanging IV stands silhouettes
-        [-3.4, 3.4].forEach((x) => {
-          const pole = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.03, 0.03, 2.4, 8),
-            new THREE.MeshStandardMaterial({ color: 0x1a2b33, metalness: 0.8, roughness: 0.4 })
-          );
-          pole.position.set(x, 1.2, 2.2);
-          scene.add(pole);
-          const hook = new THREE.Mesh(
-            new THREE.BoxGeometry(0.7, 0.04, 0.04),
-            new THREE.MeshStandardMaterial({ color: 0x1a2b33, metalness: 0.8 })
-          );
-          hook.position.set(x, 2.4, 2.2);
-          scene.add(hook);
-          const bagMat = new THREE.MeshPhysicalMaterial({ color: 0x5eead4, transparent: true, opacity: 0.28, roughness: 0.2 });
-          const bag = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.42, 0.08), bagMat);
-          bag.position.set(x - 0.28, 2.1, 2.2);
-          scene.add(bag);
-        });
-        // EERIE: quarantine plastic curtain strips at entrance
-        for (let i = 0; i < 5; i++) {
-          const strip = new THREE.Mesh(
-            new THREE.PlaneGeometry(0.55, 2.6),
-            new THREE.MeshPhysicalMaterial({ color: 0x99f6e4, transparent: true, opacity: 0.13, roughness: 0.3, side: THREE.DoubleSide })
-          );
-          strip.position.set(-1.4 + i * 0.7, 1.7, 5.4);
-          strip.rotation.y = (Math.random() - 0.5) * 0.25;
-          scene.add(strip);
-          animatedObjects.push({ update: (t) => { strip.rotation.y = Math.sin(t * 0.9 + i) * 0.18; } });
-        }
-
-        // Animation update
-        animatedObjects.push({
-          update: (time) => {
-            surgicalRing.rotation.z = time * 0.5;
-            ecgCtx.fillStyle = 'rgba(6, 24, 30, 0.2)';
-            ecgCtx.fillRect(0, 0, 512, 256);
-            const glitch = Math.random() > 0.965;
-            ecgCtx.strokeStyle = glitch ? '#ef4444' : '#10b981';
-            ecgCtx.lineWidth = 4;
-            ecgCtx.beginPath();
-            const offset = (time * 180) % 512;
-            for (let x = 0; x < 512; x += 4) {
-              const relX = (x + offset) % 512;
-              let y = 128;
-              if (glitch) {
-                y = 128 + (Math.random() - 0.5) * 90;
-              } else if (relX > 200 && relX < 240) {
-                y = 128 - Math.sin((relX - 200) / 40 * Math.PI) * 75;
-              } else if (relX >= 240 && relX < 270) {
-                y = 128 + Math.sin((relX - 240) / 30 * Math.PI) * 45;
-              } else if (relX >= 400 && relX < 430) {
-                y = 128;
-              }
-              if (x === 0) ecgCtx.moveTo(x, y);
-              else ecgCtx.lineTo(x, y);
-            }
-            ecgCtx.stroke();
-            ecgCtx.fillStyle = glitch ? '#fca5a5' : '#5eead4';
-            ecgCtx.font = 'bold 20px monospace';
-            ecgCtx.fillText(glitch ? `SIGNAL LOST // PURGE SPIKE` : `BPM: 74 // TRIAGE DESYNC: 38%`, 20, 40);
-            ecgTexture.needsUpdate = true;
-            const pos = particleGeo.attributes.position.array as Float32Array;
-            for (let i = 0; i < pCount; i++) {
-              pos[i * 3 + 1] += 0.008;
-              if (pos[i * 3 + 1] > 2.5) pos[i * 3 + 1] = 0.5;
-            }
-            particleGeo.attributes.position.needsUpdate = true;
-            flickerSurgical.intensity = Math.random() > 0.08 ? 2.2 : 0.35;
-            quarantineBeacon.intensity = 1.1 + Math.sin(time * 4.2) * 0.9;
-            const s = 1 + Math.sin(time * 4.2) * 0.25;
-            beaconMesh.scale.set(s, s, s);
-          }
-        });
-        break;
-      }
-
-      // ----------------------------------------
-      // 2. SCHOOL: Pedagogical Database Core
-      // ----------------------------------------
-      case 'school': {
-        // Towering central holographic core
-        const corePillar = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.9, 1.1, roomHeight, 16),
-          new THREE.MeshStandardMaterial({ color: 0x142334, metalness: 0.8, roughness: 0.3 })
-        );
-        corePillar.position.set(0, roomHeight / 2, -1);
-        scene.add(corePillar);
-
-        // Orbiting Holographic Rings
-        const ring1 = new THREE.Mesh(
-          new THREE.TorusGeometry(1.6, 0.04, 8, 32),
-          new THREE.MeshBasicMaterial({ color: 0x38bdf8, wireframe: true })
-        );
-        ring1.position.set(0, 2.0, -1);
-        scene.add(ring1);
-
-        const ring2 = new THREE.Mesh(
-          new THREE.TorusGeometry(2.0, 0.03, 8, 32),
-          new THREE.MeshBasicMaterial({ color: 0xf59e0b, wireframe: true })
-        );
-        ring2.position.set(0, 2.0, -1);
-        scene.add(ring2);
-
-        // Floating geometric formula solids orbiting
-        const formulaCube = new THREE.Mesh(
-          new THREE.BoxGeometry(0.35, 0.35, 0.35),
-          new THREE.MeshBasicMaterial({ color: 0x38bdf8, wireframe: true })
-        );
-        scene.add(formulaCube);
-
-        // Classroom study desks with interactive slates
-        [-2.8, 2.8].forEach((x) => {
-          const desk = new THREE.Mesh(
-            new THREE.BoxGeometry(1.6, 0.75, 0.9),
-            new THREE.MeshStandardMaterial({ color: 0x182433 })
-          );
-          desk.position.set(x, 0.37, 1.2);
-          scene.add(desk);
-
-          const slate = new THREE.Mesh(
-            new THREE.PlaneGeometry(0.6, 0.4),
-            new THREE.MeshBasicMaterial({ color: 0x38bdf8 })
-          );
-          slate.rotation.x = -Math.PI / 2;
-          slate.position.set(x, 0.76, 1.2);
-          scene.add(slate);
-        });
-
-        // Front chalkboard projection
-        const boardCanvas = document.createElement('canvas');
-        boardCanvas.width = 512;
-        boardCanvas.height = 256;
-        const bCtx = boardCanvas.getContext('2d')!;
-        const boardTexture = new THREE.CanvasTexture(boardCanvas);
-        const blackboard = new THREE.Mesh(
-          new THREE.PlaneGeometry(4.2, 2.0),
-          new THREE.MeshBasicMaterial({ map: boardTexture })
-        );
-        blackboard.position.set(0, 2.4, -roomLength / 2 + 0.1);
-        scene.add(blackboard);
-
-        animatedObjects.push({
-          update: (time) => {
-            ring1.rotation.x = time * 0.8;
-            ring1.rotation.y = time * 0.5;
-            ring2.rotation.x = -time * 0.6;
-            ring2.rotation.z = time * 0.7;
-
-            // Orbit formula cube
-            formulaCube.position.set(
-              Math.cos(time * 1.5) * 2.2,
-              2.0 + Math.sin(time * 2.0) * 0.3,
-              -1 + Math.sin(time * 1.5) * 2.2
-            );
-            formulaCube.rotation.x = time;
-            formulaCube.rotation.y = time;
-
-            // Draw scrolling classroom curriculum formula
-            bCtx.fillStyle = '#06201a';
-            bCtx.fillRect(0, 0, 512, 256);
-            bCtx.strokeStyle = '#10b981';
-            bCtx.strokeRect(4, 4, 504, 248);
-            bCtx.fillStyle = '#38bdf8';
-            bCtx.font = 'bold 22px "JetBrains Mono", monospace';
-            bCtx.fillText('EDU-CORE // LOGIC & CIVIC ARCHITECTURE', 20, 45);
-            bCtx.fillStyle = '#e2e8f0';
-            bCtx.font = '16px monospace';
-            bCtx.fillText(`[AXIOM 4] DELTA_SANCTUARY = NULL(POPULATION)`, 20, 90);
-            bCtx.fillText(`PUPIL COUNT REGISTERED: 84 / 120 [36 MISSING]`, 20, 125);
-            bCtx.fillStyle = '#f59e0b';
-            bCtx.fillText(`CURRICULUM FIREWALL STATUS: PURGING...`, 20, 165);
-            boardTexture.needsUpdate = true;
-          }
-        });
-        break;
-      }
-
-      // ----------------------------------------
-      // 3. MUSEUM: Ancient Spinning Relic & Lasers
-      // ----------------------------------------
-      case 'museum': {
-        // Circular dais
-        const dais = new THREE.Mesh(
-          new THREE.CylinderGeometry(1.6, 1.8, 0.7, 24),
-          new THREE.MeshStandardMaterial({ color: 0x1d1130, metalness: 0.9, roughness: 0.1 })
-        );
-        dais.position.set(0, 0.35, -1);
-        scene.add(dais);
-
-        // Glass containment dome
-        const dome = new THREE.Mesh(
-          new THREE.SphereGeometry(1.3, 24, 16, 0, Math.PI * 2, 0, Math.PI / 2),
-          new THREE.MeshPhysicalMaterial({ color: 0xffffff, transparent: true, opacity: 0.25, transmission: 0.9, roughness: 0.1 })
-        );
-        dome.position.set(0, 0.7, -1);
-        scene.add(dome);
-
-        // The Spinning Ancient Relic Core (Inner Octahedron + Outer Gyro Ring)
-        const relicCore = new THREE.Mesh(
-          new THREE.IcosahedronGeometry(0.45, 0),
-          new THREE.MeshBasicMaterial({ color: 0xfacc15, wireframe: true })
-        );
-        relicCore.position.set(0, 1.35, -1);
-        scene.add(relicCore);
-
-        const relicRing = new THREE.Mesh(
-          new THREE.TorusGeometry(0.75, 0.03, 8, 24),
-          new THREE.MeshBasicMaterial({ color: 0xd97706 })
-        );
-        relicRing.position.set(0, 1.35, -1);
-        scene.add(relicRing);
-
-        // Laser Security Beam sweeping across room
-        const laserMat = new THREE.MeshBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.7 });
-        const laserBeam = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 12, 8), laserMat);
-        laserBeam.rotation.z = Math.PI / 2;
-        laserBeam.position.set(0, 1.1, -1);
-        scene.add(laserBeam);
-
-        // Display cases along side walls
-        [-5.5, 5.5].forEach((x) => {
-          const caseStand = new THREE.Mesh(
-            new THREE.BoxGeometry(1.2, 1.0, 1.2),
-            new THREE.MeshStandardMaterial({ color: 0x180d26, metalness: 0.8 })
-          );
-          caseStand.position.set(x, 0.5, 0);
-          scene.add(caseStand);
-
-          const relicArtifact = new THREE.Mesh(
-            new THREE.DodecahedronGeometry(0.25),
-            new THREE.MeshBasicMaterial({ color: 0xa855f7, wireframe: true })
-          );
-          relicArtifact.position.set(x, 1.3, 0);
-          scene.add(relicArtifact);
-        });
-
-        animatedObjects.push({
-          update: (time) => {
-            relicCore.rotation.x = time * 1.2;
-            relicCore.rotation.y = time * 1.6;
-            relicRing.rotation.x = time * 0.8;
-            relicRing.rotation.z = -time * 1.0;
-
-            // Sweeping laser
-            laserBeam.position.z = -1 + Math.sin(time * 1.5) * 3.5;
-            laserBeam.position.y = 1.1 + Math.cos(time * 2.0) * 0.2;
-          }
-        });
-        break;
-      }
-
-      // ----------------------------------------
-      // 4. SPORTS: Scoreboard & Pulsing Power Conduit
-      // ----------------------------------------
-      case 'sports': {
-        // Overhead Stadium Scoreboard suspended from ceiling
-        const scoreFrame = new THREE.Mesh(
-          new THREE.BoxGeometry(4.2, 1.4, 0.5),
-          new THREE.MeshStandardMaterial({ color: 0x1c1209, metalness: 0.9 })
-        );
-        scoreFrame.position.set(0, roomHeight - 1.2, -1);
-        scene.add(scoreFrame);
-
-        // Scoreboard display texture
-        const scoreCanvas = document.createElement('canvas');
-        scoreCanvas.width = 512;
-        scoreCanvas.height = 128;
-        const sCtx = scoreCanvas.getContext('2d')!;
-        const scoreTexture = new THREE.CanvasTexture(scoreCanvas);
-        const scoreScreen = new THREE.Mesh(
-          new THREE.PlaneGeometry(3.9, 1.1),
-          new THREE.MeshBasicMaterial({ map: scoreTexture })
-        );
-        scoreScreen.position.set(0, roomHeight - 1.2, -0.74);
-        scene.add(scoreScreen);
-
-        // Metal Gym Locker Row
-        const lockerBank = new THREE.Mesh(
-          new THREE.BoxGeometry(4.8, 2.2, 0.7),
-          new THREE.MeshStandardMaterial({ color: 0x24180d, metalness: 0.8, roughness: 0.4 })
-        );
-        lockerBank.position.set(0, 1.1, -roomLength / 2 + 0.4);
-        scene.add(lockerBank);
-
-        // Exposed Glowing Floor Conduit under grates
-        const conduitCoil = new THREE.Mesh(
-          new THREE.TorusGeometry(2.4, 0.08, 8, 32),
-          new THREE.MeshBasicMaterial({ color: 0xf59e0b, wireframe: true })
-        );
-        conduitCoil.rotation.x = Math.PI / 2;
-        conduitCoil.position.set(0, 0.05, 0.5);
-        scene.add(conduitCoil);
-
-        animatedObjects.push({
-          update: (time) => {
-            // Pulsing conduit coil
-            const pulse = (Math.sin(time * 6.0) + 1) / 2;
-            conduitCoil.scale.set(1 + pulse * 0.05, 1 + pulse * 0.05, 1);
-
-            // Draw Scoreboard Clock & Grid telemetry
-            sCtx.fillStyle = '#0f0701';
-            sCtx.fillRect(0, 0, 512, 128);
-            sCtx.strokeStyle = '#ea580c';
-            sCtx.strokeRect(2, 2, 508, 124);
-            sCtx.fillStyle = '#facc15';
-            sCtx.font = 'bold 36px "Chakra Petch", sans-serif';
-            sCtx.fillText(`PAVILION // ATH-Y04`, 20, 48);
-            sCtx.fillStyle = '#ea580c';
-            sCtx.font = 'bold 28px monospace';
-            const secs = String(Math.floor((time * 10) % 60)).padStart(2, '0');
-            sCtx.fillText(`SUB-LEVEL BUS: 12,000 kW [OVERLOAD] :${secs}`, 20, 95);
-            scoreTexture.needsUpdate = true;
-          }
-        });
-        break;
-      }
-
-      // ----------------------------------------
-      // 5. SOCIETY: Rotating Fan Blades & Fog
-      // ----------------------------------------
-      case 'society': {
-        // Ceiling Industrial Ventilation Fans
-        const fanGroup = new THREE.Group();
-        fanGroup.position.set(0, roomHeight - 0.2, 0);
-
-        for (let i = 0; i < 4; i++) {
-          const blade = new THREE.Mesh(
-            new THREE.BoxGeometry(0.3, 0.04, 1.4),
-            new THREE.MeshStandardMaterial({ color: 0x1a0f24, metalness: 0.8 })
-          );
-          blade.rotation.y = (i * Math.PI) / 2;
-          blade.position.set(0, 0, 0.7).applyAxisAngle(new THREE.Vector3(0, 1, 0), (i * Math.PI) / 2);
-          fanGroup.add(blade);
-        }
-        scene.add(fanGroup);
-
-        // Habitat Unit Doors along side walls
-        [-roomWidth / 2 + 0.25, roomWidth / 2 - 0.25].forEach((x, idx) => {
-          const podDoor = new THREE.Mesh(
-            new THREE.BoxGeometry(0.3, 2.8, 1.8),
-            new THREE.MeshStandardMaterial({ color: 0x22102e, metalness: 0.8 })
-          );
-          podDoor.position.set(x, 1.4, -1);
-          scene.add(podDoor);
-
-          // Unit 404 sign
-          const sign = createBillboardSprite(
-            idx === 0 ? 'UNIT 404 [SEALED]' : 'UNIT 405 [VACANT]',
-            idx === 0 ? 'WARNING: CITIZEN EXPUNGED' : 'DOOR LOCKED',
-            idx === 0 ? '#ef4444' : '#facc15'
-          );
-          sign.position.set(x + (idx === 0 ? 0.45 : -0.45), 2.2, -1);
-          sign.scale.set(1.4, 0.7, 1);
-          scene.add(sign);
-        });
-
-        // Communal water synthesizer kiosk in center
-        const kiosk = new THREE.Mesh(
-          new THREE.BoxGeometry(1.6, 2.2, 1.4),
-          new THREE.MeshStandardMaterial({ color: 0x1f0d2b, metalness: 0.8 })
-        );
-        kiosk.position.set(0, 1.1, -1);
-        scene.add(kiosk);
-
-        animatedObjects.push({
-          update: (time) => {
-            fanGroup.rotation.y = time * 3.5; // continuously spinning fan blades
-          }
-        });
-        break;
+    // Architectural dressing: brighter ceiling luminaires, structural ribs, floor inlays and side-wall information panels.
+    // These make the room read as a designed facility rather than an empty dark box.
+    for (const z of [-3.5, 3.45]) {
+      box(8.65, 0.09, 0.12, 0x080d14, 0, 3.48, z, { metalness: 0.8 });
+      box(7.9, 0.035, 0.045, theme.primary, 0, 3.43, z, { emissive: theme.primary, emissiveIntensity: 1.35 });
+    }
+    for (const x of [-4.48, 4.48]) {
+      for (const z of [-3.65, 3.65]) {
+        box(0.18, 3.1, 0.18, 0x0a111b, x, 1.55, z, { metalness: 0.82, roughness: 0.28 });
+        box(0.035, 2.75, 0.045, theme.accent, x + (x < 0 ? 0.105 : -0.105), 1.55, z, { emissive: theme.accent, emissiveIntensity: 0.9 });
       }
     }
+    // Three luminous ceiling panels provide broad, readable fill light.
+    for (const z of [-2.7, 2.7]) {
+      box(2.6, 0.055, 0.78, 0x172635, 0, 3.66, z, { metalness: 0.25, roughness: 0.35, emissive: theme.primary, emissiveIntensity: 0.22 });
+      box(2.25, 0.025, 0.48, 0xc8f7ff, 0, 3.62, z, { emissive: theme.primary, emissiveIntensity: 1.4 });
+    }
+    // Inlaid guide lines frame the walking lane without filling the small room with clutter.
+    box(0.035, 0.018, 7.1, theme.primary, -3.9, 0.018, -0.1, { emissive: theme.primary, emissiveIntensity: 0.55 });
+    box(0.035, 0.018, 7.1, theme.primary, 3.9, 0.018, -0.1, { emissive: theme.primary, emissiveIntensity: 0.55 });
+    box(6.9, 0.018, 0.035, theme.accent, 0, 0.02, 3.65, { emissive: theme.accent, emissiveIntensity: 0.45 });
+    box(6.9, 0.018, 0.035, theme.accent, 0, 0.02, -3.65, { emissive: theme.accent, emissiveIntensity: 0.45 });
 
-    // ==========================================
-    // 5. THE TWO CLEAR CTF TERMINAL STATIONS
-    // ==========================================
-    const ctfObjects: { mesh: THREE.Group; ctf: CTFData; pos: THREE.Vector3 }[] = [];
+    const makeWallGraphic = (side: 'left' | 'right') => {
+      const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 320;
+      const g = canvas.getContext('2d')!;
+      const primary = `#${theme.primary.toString(16).padStart(6, '0')}`;
+      const accent = `#${theme.accent.toString(16).padStart(6, '0')}`;
+      g.fillStyle = '#071019'; g.fillRect(0, 0, 512, 320);
+      g.fillStyle = 'rgba(255,255,255,.035)';
+      for (let y = 18; y < 320; y += 22) g.fillRect(16, y, 480, 1);
+      g.strokeStyle = primary; g.lineWidth = 4; g.strokeRect(8, 8, 496, 304);
+      const panelCopy = ROOM_PANEL_COPY[building.id];
+      g.fillStyle = primary; g.font = 'bold 24px monospace';
+      g.fillText(side === 'left' ? panelCopy.leftTitle : panelCopy.rightTitle, 28, 48);
+      g.fillStyle = '#dce9f4'; g.font = '16px monospace';
+      g.fillText(side === 'left' ? theme.label : building.code, 28, 80);
+      g.strokeStyle = accent; g.lineWidth = 3; g.beginPath();
+      for (let x = 0; x <= 440; x += 8) { const y = 165 + Math.sin(x * 0.045) * (side === 'left' ? 24 : 36) + Math.sin(x * 0.12) * 8; if (x === 0) g.moveTo(28 + x, y); else g.lineTo(28 + x, y); }
+      g.stroke();
+      g.fillStyle = accent; g.font = 'bold 16px monospace';
+      g.fillText(side === 'left' ? panelCopy.leftStatus : panelCopy.rightStatus, 28, 235);
+      g.fillStyle = '#8295a8'; g.font = '12px monospace'; g.fillText(panelCopy.footer, 28, 270);
+      const tex = new THREE.CanvasTexture(canvas); tex.colorSpace = THREE.SRGBColorSpace; textures.push(tex);
+      const x = side === 'left' ? -4.79 : 4.79;
+      box(0.14, 1.62, 2.35, 0x080d14, x, 2.0, -1.35, { metalness: 0.85, roughness: 0.3 });
+      const plane = new THREE.Mesh(new THREE.PlaneGeometry(2.16, 1.35), addMaterial(new THREE.MeshBasicMaterial({ map: tex })));
+      plane.position.set(side === 'left' ? -4.70 : 4.70, 2.0, -1.35); plane.rotation.y = side === 'left' ? Math.PI / 2 : -Math.PI / 2; scene.add(plane);
+      box(0.035, 1.45, 0.04, side === 'left' ? theme.primary : theme.accent, side === 'left' ? -4.61 : 4.61, 2.0, -2.55, { emissive: side === 'left' ? theme.primary : theme.accent, emissiveIntensity: 0.8 });
+    };
+    makeWallGraphic('left'); makeWallGraphic('right');
 
-    building.ctfs.forEach((ctf) => {
-      const group = new THREE.Group();
-      const [px, py, pz] = ctf.roomPosition;
-      group.position.set(px, 0, pz);
-      if (ctf.roomRotation) group.rotation.y = ctf.roomRotation;
+    // One primary interactive terminal opens the shared social account mirror.
+    const ctfScreen = makeScreenTexture('ctf');
+    const dataScreen = makeScreenTexture('dataset');
+    const scoreScreen = makeScreenTexture('scoreboard');
+    const datasetUnlocked = false;
+    const activeScreenTexture = datasetUnlocked ? dataScreen.tex : ctfScreen.tex;
+    const terminalAccent = datasetUnlocked ? theme.primary : theme.accent;
+    const stationX = 0;
+    const stationPos = new THREE.Vector3(stationX, 1.85, -4.12);
 
-      // Pedestal Base
-      const baseMat = new THREE.MeshStandardMaterial({
-        color: 0x111622,
-        metalness: 0.9,
-        roughness: 0.3
-      });
-      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.9, 1.1, 16), baseMat);
-      base.position.y = 0.55;
-      base.castShadow = true;
-      group.add(base);
+    // Rugged single-screen console with a deep frame, status lights, vents and access reader.
+    box(3.7, 2.28, 0.34, 0x080d14, stationX, 2.05, -4.48, { metalness: 0.88, roughness: 0.28 });
+    box(3.48, 0.06, 0.07, terminalAccent, stationX, 3.17, -4.28, { emissive: terminalAccent, emissiveIntensity: 1.15 });
+    for (const dx of [-1.78, 1.78]) {
+      box(0.055, 1.76, 0.06, datasetUnlocked ? theme.primary : theme.accent, stationX + dx, 2.04, -4.27, { emissive: datasetUnlocked ? theme.primary : theme.accent, emissiveIntensity: 0.95 });
+      for (let i = 0; i < 3; i++) {
+        const indicatorColor = datasetUnlocked ? theme.primary : (i === 0 ? 0x34d399 : theme.accent);
+        box(0.075, 0.075, 0.045, indicatorColor, stationX + dx, 1.18 + i * 0.16, -4.25, { emissive: indicatorColor, emissiveIntensity: 1.1 });
+      }
+    }
+    for (let vent = 0; vent < 5; vent++) box(0.2, 0.025, 0.035, 0x64748b, stationX - 0.48 + vent * 0.24, 0.88, -4.26, { metalness: 0.85, roughness: 0.28 });
+    const mainScreen = new THREE.Mesh(new THREE.PlaneGeometry(3.36, 1.82), addMaterial(new THREE.MeshBasicMaterial({ map: activeScreenTexture })));
+    mainScreen.position.set(stationX, 2.06, -4.285); scene.add(mainScreen);
 
-      // Status Ring
-      const statusColor = ctf.completed ? 0x10b981 : 0xfacc15;
-      const statusRing = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.72, 0.72, 0.08, 16),
-        new THREE.MeshBasicMaterial({ color: statusColor })
-      );
-      statusRing.position.y = 0.95;
-      group.add(statusRing);
+    const labelCanvas = document.createElement('canvas'); labelCanvas.width = 640; labelCanvas.height = 96;
+    const lctx = labelCanvas.getContext('2d')!; lctx.fillStyle = '#071019'; lctx.fillRect(0, 0, 640, 96);
+    lctx.fillStyle = `#${theme.primary.toString(16).padStart(6, '0')}`; lctx.font = 'bold 30px monospace'; lctx.textAlign = 'center';
+    lctx.fillText(datasetUnlocked ? 'SOCIAL TRACE ARCHIVE' : 'SOCIAL TRACE TERMINAL', 320, 58);
+    const labelTex = new THREE.CanvasTexture(labelCanvas); labelTex.colorSpace = THREE.SRGBColorSpace; textures.push(labelTex);
+    const label = new THREE.Mesh(new THREE.PlaneGeometry(3.15, 0.47), addMaterial(new THREE.MeshBasicMaterial({ map: labelTex, transparent: true })));
+    label.position.set(stationX, 3.38, -4.30); scene.add(label);
 
-      // Angled Console
-      const consoleMesh = new THREE.Mesh(
-        new THREE.BoxGeometry(1.1, 0.8, 0.1),
-        new THREE.MeshStandardMaterial({ color: 0x1a2332, metalness: 0.8 })
-      );
-      consoleMesh.position.set(0, 1.35, 0);
-      consoleMesh.rotation.x = -0.35;
-      group.add(consoleMesh);
+    // A small physical access reader reinforces the state change without adding another screen.
+    box(0.48, 0.26, 0.12, 0x101722, 2.15, 0.83, -3.82, { metalness: 0.82, roughness: 0.3 });
+    box(0.29, 0.045, 0.035, datasetUnlocked ? 0x34d399 : 0xfbbf24, 2.15, 0.88, -3.745, { emissive: datasetUnlocked ? 0x34d399 : 0xfbbf24, emissiveIntensity: 1.1 });
+    interactive.push({ type: 'ctf', pos: stationPos, ctf: visibleCTF });
+    // Keep the player in front of the terminal rather than walking through the console mesh.
+    addBlocker(-1.92, 1.92, -4.78, -4.26);
+    pointLight(terminalAccent, 5.5, 4.8, stationX, 2.25, -3.45);
 
-      // Holographic Screen with Canvas
-      const screenColor = ctf.completed ? '#10b981' : '#facc15';
-      const screenMesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.95, 0.65),
-        new THREE.MeshBasicMaterial({ color: statusColor, wireframe: true })
-      );
-      screenMesh.position.set(0, 1.37, 0.06);
-      screenMesh.rotation.x = -0.35;
-      group.add(screenMesh);
+    // Additional low-profile set dressing: labeled utility rails and small hardware modules
+    // add texture while keeping the center walking lane clear.
+    for (const side of [-1, 1]) {
+      const x = side * 4.48;
+      box(0.11, 1.12, 0.42, 0x0b121c, x, 1.45, -3.0, { metalness: 0.82, roughness: 0.32 });
+      box(0.035, 0.76, 0.035, theme.accent, x + (side < 0 ? 0.07 : -0.07), 1.48, -3.0, { emissive: theme.accent, emissiveIntensity: 0.85 });
+      for (let i = 0; i < 4; i++) box(0.045, 0.045, 0.045, i === 0 ? 0x34d399 : theme.primary, x + (side < 0 ? 0.08 : -0.08), 1.12 + i * 0.2, -2.78, { emissive: i === 0 ? 0x34d399 : theme.primary, emissiveIntensity: 0.75 });
+    }
 
-      // Floating Billboard Label
-      const labelText = `CTF // ${ctf.slot} ${ctf.label}`;
-      const sublabelText = ctf.completed ? '[ STATUS: SECURED ✓ ]' : '[ PRESS E TO ACCESS ]';
-      const sprite = createBillboardSprite(labelText, sublabelText, screenColor);
-      sprite.position.set(0, 2.3, 0);
-      sprite.scale.set(2.4, 1.2, 1);
-      group.add(sprite);
+    // Building-specific set dressing. Keep the central route clear and make each room immediately recognizable.
+    if (building.id === 'sports') {
+      // A compact futuristic training court: painted markings, ball rack, arena banners and a lit wall hoop.
+      const courtMat = addMaterial(new THREE.MeshBasicMaterial({ color: theme.accent, transparent: true, opacity: 0.88 }));
+      const courtLines = new THREE.Group();
+      const line = (w: number, d: number, x: number, z: number) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.022, d), courtMat); m.position.set(x, 0.035, z); courtLines.add(m); };
+      line(6.0, 0.035, 0, 0); line(0.035, 4.7, 0, 0); line(2.1, 0.035, 0, -2.35); line(2.1, 0.035, 0, 2.35);
+      const arc = new THREE.Mesh(new THREE.TorusGeometry(1.05, 0.022, 6, 36, Math.PI), courtMat); arc.rotation.x = -Math.PI / 2; arc.position.set(0, 0.04, -0.1); courtLines.add(arc); scene.add(courtLines);
+      // Backboard and hoop sit above the screen wall; a compact scoreboard reads as an arena feature.
+      box(1.15, 0.66, 0.09, 0xdce8f2, -2.45, 3.28, -4.0, { metalness: 0.45, roughness: 0.25, emissive: theme.primary, emissiveIntensity: 0.08 });
+      box(0.82, 0.045, 0.045, theme.accent, -2.45, 2.97, -3.92, { emissive: theme.accent, emissiveIntensity: 1.1 });
+      const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.035, 8, 24), addMaterial(new THREE.MeshStandardMaterial({ color: theme.accent, metalness: 0.85, emissive: theme.accent, emissiveIntensity: 0.6 })));
+      hoop.rotation.x = Math.PI / 2; hoop.position.set(-2.45, 2.93, -3.73); scene.add(hoop);
+      const net = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.15, 0.3, 10, 1, true), addMaterial(new THREE.MeshBasicMaterial({ color: 0xe2e8f0, wireframe: true, transparent: true, opacity: 0.55 })));
+      net.position.set(-2.45, 2.76, -3.73); scene.add(net);
+      const scoreMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.42), addMaterial(new THREE.MeshBasicMaterial({ map: scoreScreen.tex })));
+      scoreMesh.position.set(3.55, 2.72, -4.08); scene.add(scoreMesh);
+      // Side equipment pods, kept close to the walls to preserve the playable lane.
+      addBlocker(-4.12, -3.0, 0.12, 1.12);
+      addBlocker(3.0, 4.12, 0.12, 1.12);
+      for (const x of [-3.55, 3.55]) {
+        box(1.0, 0.65, 0.72, 0x111a26, x, 0.34, 0.65, { metalness: 0.78, roughness: 0.28 });
+        box(0.84, 0.055, 0.045, theme.accent, x, 0.67, 0.26, { emissive: theme.accent, emissiveIntensity: 0.9 });
+        box(0.7, 0.18, 0.04, theme.primary, x, 1.05, 0.25, { emissive: theme.primary, emissiveIntensity: 0.6 });
+      }
+      const ball = new THREE.Mesh(new THREE.SphereGeometry(0.22, 18, 14), addMaterial(new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.72, emissive: 0x7c2d12, emissiveIntensity: 0.16 })));
+      ball.position.set(-3.48, 0.25, -0.15); scene.add(ball);
+      const ballSeam = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.012, 6, 24), addMaterial(new THREE.MeshBasicMaterial({ color: 0x27160b })));
+      ballSeam.position.copy(ball.position); ballSeam.rotation.x = Math.PI / 2; scene.add(ballSeam);
+      // Arena identity banners on either side of the display wall.
+      for (const x of [-3.55, 3.55]) {
+        box(0.78, 1.5, 0.07, 0x0a111b, x, 2.55, -4.3, { metalness: 0.65 });
+        box(0.055, 1.25, 0.035, theme.accent, x, 2.55, -4.24, { emissive: theme.accent, emissiveIntensity: 1.0 });
+        box(0.45, 0.055, 0.035, theme.primary, x, 2.85, -4.23, { emissive: theme.primary, emissiveIntensity: 0.8 });
+        box(0.45, 0.055, 0.035, theme.primary, x, 2.25, -4.23, { emissive: theme.primary, emissiveIntensity: 0.8 });
+      }
+    } else if (building.id === 'hospital') {
+      // Medical bay: diagnostic bed, bedside monitor, cabinet and illuminated clinical cross.
+      addBlocker(-3.05, -1.12, 0.15, 1.35);
+      addBlocker(-3.98, -3.12, -0.12, 0.42);
+      addBlocker(3.12, 4.02, 0.2, 1.05);
+      box(1.65, 0.36, 0.95, 0xd7e8e8, -2.1, 0.38, 0.75, { metalness: 0.15, roughness: 0.35 });
+      box(1.38, 0.08, 0.72, 0x7dd3c7, -2.1, 0.61, 0.75, { emissive: 0x0f766e, emissiveIntensity: 0.28 });
+      box(0.08, 0.3, 0.05, theme.accent, -1.38, 0.86, 0.75, { emissive: theme.accent, emissiveIntensity: 0.7 });
+      box(0.75, 0.82, 0.2, 0x102b35, -3.55, 1.25, 0.25, { metalness: 0.7 });
+      box(0.62, 0.43, 0.035, 0x06131a, -3.55, 1.36, 0.13, { emissive: theme.primary, emissiveIntensity: 0.2 });
+      box(0.42, 0.06, 0.04, theme.primary, -3.55, 1.48, 0.1, { emissive: theme.primary, emissiveIntensity: 1.0 });
+      box(0.72, 1.25, 0.55, 0xd7e8e8, 3.55, 0.63, 0.6, { metalness: 0.3 });
+      box(0.76, 0.08, 0.6, theme.primary, 3.55, 1.28, 0.6, { emissive: theme.primary, emissiveIntensity: 0.65 });
+      box(0.56, 0.12, 0.035, theme.accent, 4.55, 1.75, -0.1, { emissive: theme.accent, emissiveIntensity: 0.9 });
+      box(0.12, 0.56, 0.035, theme.accent, 4.55, 1.75, -0.1, { emissive: theme.accent, emissiveIntensity: 0.9 });
+    } else if (building.id === 'school') {
+      // Compact learning station: teacher console, data board, stacked books and school insignia.
+      addBlocker(-3.2, -1.0, 0.2, 1.32);
+      addBlocker(-3.98, -3.12, -0.12, 0.42);
+      box(2.0, 0.12, 0.82, 0x64748b, -2.1, 0.92, 0.78, { metalness: 0.6 });
+      // Mount the schedule board on the left wall, keeping the sightline and walk lane
+      // to the central investigation terminal clear. The thin X dimension makes it wall-mounted.
+      box(0.08, 0.68, 1.98, 0x0b2533, -4.78, 2.2, 1.2, { emissive: theme.primary, emissiveIntensity: 0.12 });
+      box(0.035, 0.42, 1.72, 0x071019, -4.70, 2.2, 1.2, { emissive: theme.primary, emissiveIntensity: 0.25 });
+      for (let i = 0; i < 4; i++) box(0.38, 0.08, 0.28, [0x38bdf8, 0xfbbf24, 0x22c55e, 0xc084fc][i], -2.72 + i * 0.4, 1.04, 0.72, { roughness: 0.72 });
+      box(0.72, 0.78, 0.12, 0x0b2533, -3.55, 1.7, 0.1, { metalness: 0.6 });
+      for (let i = 0; i < 3; i++) box(0.56, 0.055, 0.04, theme.accent, -3.55, 1.45 + i * 0.22, 0.025, { emissive: theme.accent, emissiveIntensity: 0.65 });
+      box(0.65, 0.65, 0.08, theme.primary, 3.55, 1.7, -4.25, { emissive: theme.primary, emissiveIntensity: 0.15 });
+    } else if (building.id === 'museum') {
+      // Archive gallery: plinth, floating artifact and a pair of low illuminated exhibit vitrines.
+      addBlocker(1.35, 2.85, 0.12, 1.32);
+      addBlocker(-4.12, -3.0, 0.12, 1.14);
+      addBlocker(3.0, 4.12, 0.12, 1.14);
+      box(1.25, 0.55, 0.95, 0x211733, 2.1, 0.3, 0.72, { metalness: 0.8 });
+      const artifact = new THREE.Mesh(new THREE.OctahedronGeometry(0.3, 0), addMaterial(new THREE.MeshStandardMaterial({ color: theme.accent, metalness: 0.75, roughness: 0.2, emissive: theme.accent, emissiveIntensity: 0.7 })));
+      artifact.position.set(2.1, 0.92, 0.72); scene.add(artifact);
+      const halo = new THREE.Mesh(new THREE.TorusGeometry(0.52, 0.018, 6, 32), addMaterial(new THREE.MeshBasicMaterial({ color: theme.primary, transparent: true, opacity: 0.9 })));
+      halo.position.set(2.1, 1.1, 0.72); halo.rotation.x = Math.PI / 2; scene.add(halo);
+      for (const x of [-3.55, 3.55]) {
+        box(1.0, 0.75, 0.78, 0x171126, x, 0.38, 0.65, { metalness: 0.85, roughness: 0.22 });
+        box(0.92, 0.52, 0.7, 0x6b4a96, x, 0.88, 0.65, { metalness: 0.4, roughness: 0.18, emissive: theme.primary, emissiveIntensity: 0.08 });
+        box(0.88, 0.045, 0.72, theme.accent, x, 0.78, 0.65, { emissive: theme.accent, emissiveIntensity: 0.75 });
+      }
+    } else if (building.id === 'society') {
+      // Residential services: miniature apartment frontage, illuminated unit numbers and a parcel shelf.
+      addBlocker(-3.78, -2.96, 0.32, 1.08);
+      addBlocker(-2.68, -1.86, 0.32, 1.08);
+      addBlocker(1.86, 2.68, 0.32, 1.08);
+      addBlocker(2.96, 3.78, 0.32, 1.08);
+      addBlocker(-4.28, -2.82, -0.48, 0.3);
+      for (let i = 0; i < 4; i++) {
+        const x = [-3.35, -2.25, 2.25, 3.35][i];
+        box(0.72, 1.0, 0.48, 0x291b34, x, 0.52, 0.72, { metalness: 0.7 });
+        box(0.48, 0.38, 0.045, i === 1 ? theme.accent : theme.primary, x, 0.68, 0.46, { emissive: i === 1 ? theme.accent : theme.primary, emissiveIntensity: 0.55 });
+        box(0.5, 0.045, 0.05, theme.accent, x, 1.12, 0.44, { emissive: theme.accent, emissiveIntensity: 0.65 });
+      }
+      box(1.35, 0.5, 0.6, 0x24162d, -3.55, 0.28, -0.1, { metalness: 0.65 });
+      for (let i = 0; i < 3; i++) box(0.28, 0.24, 0.22, [0x38bdf8, 0xe879f9, 0xfacc15][i], -3.92 + i * 0.36, 0.65, -0.1, { emissive: [0x38bdf8, 0xe879f9, 0xfacc15][i], emissiveIntensity: 0.3 });
+      box(0.72, 1.1, 0.12, 0x26172f, 3.55, 0.58, -4.25, { metalness: 0.6 });
+      box(0.5, 0.08, 0.04, theme.primary, 3.55, 0.9, -4.17, { emissive: theme.primary, emissiveIntensity: 0.8 });
+    }
 
-      scene.add(group);
-      ctfObjects.push({
-        mesh: group,
-        ctf,
-        pos: new THREE.Vector3(px, py, pz)
-      });
-    });
+    // Exit interaction sits at the back of the player, with a clear directional sign.
+    const exitCanvas = document.createElement('canvas'); exitCanvas.width = 512; exitCanvas.height = 128;
+    const exitCtx = exitCanvas.getContext('2d')!; exitCtx.fillStyle = '#071019'; exitCtx.fillRect(0,0,512,128);
+    exitCtx.strokeStyle = '#facc15'; exitCtx.lineWidth = 5; exitCtx.strokeRect(4,4,504,120);
+    exitCtx.fillStyle = '#facc15'; exitCtx.font = 'bold 32px monospace'; exitCtx.textAlign = 'center'; exitCtx.fillText('EXIT // COMMUNITY MAP', 256, 78);
+    const exitTex = new THREE.CanvasTexture(exitCanvas); textures.push(exitTex);
+    const exitLabel = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 0.6), addMaterial(new THREE.MeshBasicMaterial({ map: exitTex })));
+    exitLabel.position.set(0, 3.05, 4.48); exitLabel.rotation.y = Math.PI; scene.add(exitLabel);
+    interactive.push({ type: 'exit', pos: new THREE.Vector3(0, 1.65, 4.45) });
 
-    // ==========================================
-    // 6. CONTROLS (Smooth Movement & Mouse Look)
-    // ==========================================
     const handleKeyDown = (e: KeyboardEvent) => {
-      const state = stateRef.current;
-      switch (e.code) {
-        case 'KeyW':
-        case 'ArrowUp':
-          state.keys.forward = true;
-          break;
-        case 'KeyS':
-        case 'ArrowDown':
-          state.keys.backward = true;
-          break;
-        case 'KeyA':
-        case 'ArrowLeft':
-          state.keys.left = true;
-          break;
-        case 'KeyD':
-        case 'ArrowRight':
-          state.keys.right = true;
-          break;
-        case 'ShiftLeft':
-        case 'ShiftRight':
-          state.keys.sprint = true;
-          setIsSprinting(true);
-          break;
-        case 'KeyE':
-          if (state.activePrompt) {
-            sound.playClick();
-            if (state.activePrompt.type === 'ctf' && state.activePrompt.target) {
-              state.onInteractCTF(state.activePrompt.target);
-            } else if (state.activePrompt.type === 'exit') {
-              state.onReturnToMap();
-            }
-          }
-          break;
-      }
+      // Do not move the player underneath a modal or steal keystrokes from form controls.
+      if (document.querySelector('[aria-modal="true"]')) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, button, [role="dialog"]')) return;
+      const s = stateRef.current;
+      if (['KeyW','ArrowUp'].includes(e.code)) s.keys.forward = true;
+      if (['KeyS','ArrowDown'].includes(e.code)) s.keys.backward = true;
+      if (['KeyA','ArrowLeft'].includes(e.code)) s.keys.left = true;
+      if (['KeyD','ArrowRight'].includes(e.code)) s.keys.right = true;
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { s.keys.sprint = true; setSprinting(true); }
+      if (e.code === 'KeyE' && s.prompt) interact(s.prompt);
     };
-
     const handleKeyUp = (e: KeyboardEvent) => {
-      const state = stateRef.current;
-      switch (e.code) {
-        case 'KeyW':
-        case 'ArrowUp':
-          state.keys.forward = false;
-          break;
-        case 'KeyS':
-        case 'ArrowDown':
-          state.keys.backward = false;
-          break;
-        case 'KeyA':
-        case 'ArrowLeft':
-          state.keys.left = false;
-          break;
-        case 'KeyD':
-        case 'ArrowRight':
-          state.keys.right = false;
-          break;
-        case 'ShiftLeft':
-        case 'ShiftRight':
-          state.keys.sprint = false;
-          setIsSprinting(false);
-          break;
-      }
+      const s = stateRef.current;
+      if (['KeyW','ArrowUp'].includes(e.code)) s.keys.forward = false;
+      if (['KeyS','ArrowDown'].includes(e.code)) s.keys.backward = false;
+      if (['KeyA','ArrowLeft'].includes(e.code)) s.keys.left = false;
+      if (['KeyD','ArrowRight'].includes(e.code)) s.keys.right = false;
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { s.keys.sprint = false; setSprinting(false); }
     };
-
-    const handleMouseDown = (e: MouseEvent) => {
-      stateRef.current.isMouseDown = true;
-      stateRef.current.prevMouseX = e.clientX;
-      stateRef.current.prevMouseY = e.clientY;
-
-      if (stateRef.current.activePrompt) {
-        sound.playClick();
-        if (stateRef.current.activePrompt.type === 'ctf' && stateRef.current.activePrompt.target) {
-          stateRef.current.onInteractCTF(stateRef.current.activePrompt.target);
-        } else if (stateRef.current.activePrompt.type === 'exit') {
-          stateRef.current.onReturnToMap();
-        }
-      }
+    const handleWindowBlur = () => {
+      const s = stateRef.current;
+      s.keys.forward = s.keys.backward = s.keys.left = s.keys.right = s.keys.sprint = false;
+      setSprinting(false);
     };
-
-    const handleMouseUp = () => {
-      stateRef.current.isMouseDown = false;
-    };
-
+    function interact(prompt: Prompt) {
+      if (!prompt) return;
+      sound.playClick();
+      if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
+      if (prompt.type === 'ctf' && prompt.target) callbacksRef.current.onInteractCTF(prompt.target);
+      else if (prompt.type === 'dataset' && visibleCTF?.completed) callbacksRef.current.onOpenDataset?.();
+      else if (prompt.type === 'exit') callbacksRef.current.onReturnToMap();
+    }
+    const handleMouseDown = (e: MouseEvent) => { state.mouseDown = true; state.lastX = e.clientX; state.lastY = e.clientY; };
+    const handleMouseUp = () => { state.mouseDown = false; };
     const handleMouseMove = (e: MouseEvent) => {
-      const state = stateRef.current;
-      if (document.pointerLockElement === renderer.domElement) {
-        state.cameraYaw -= e.movementX * 0.0022;
-        state.cameraPitch -= e.movementY * 0.0022;
-      } else if (state.isMouseDown) {
-        const deltaX = e.clientX - state.prevMouseX;
-        const deltaY = e.clientY - state.prevMouseY;
-        state.cameraYaw -= deltaX * 0.0035;
-        state.cameraPitch -= deltaY * 0.0035;
-        state.prevMouseX = e.clientX;
-        state.prevMouseY = e.clientY;
-      }
-      state.cameraPitch = Math.max(-1.4, Math.min(1.4, state.cameraPitch));
+      if (document.pointerLockElement === renderer.domElement) { state.yaw -= e.movementX * 0.002; state.pitch -= e.movementY * 0.002; }
+      else if (state.mouseDown) { state.yaw -= (e.clientX - state.lastX) * 0.003; state.pitch -= (e.clientY - state.lastY) * 0.003; state.lastX = e.clientX; state.lastY = e.clientY; }
     };
+    const handleCanvasClick = () => { if (document.pointerLockElement !== renderer.domElement) renderer.domElement.requestPointerLock?.(); };
+    const resize = () => { if (!container.clientWidth || !container.clientHeight) return; camera.aspect = container.clientWidth / container.clientHeight; camera.updateProjectionMatrix(); renderer.setSize(container.clientWidth, container.clientHeight); };
+    window.addEventListener('keydown', handleKeyDown); window.addEventListener('keyup', handleKeyUp); window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('mousemove', handleMouseMove); window.addEventListener('mouseup', handleMouseUp); window.addEventListener('resize', resize);
+    renderer.domElement.addEventListener('mousedown', handleMouseDown); renderer.domElement.addEventListener('click', handleCanvasClick);
 
-    const handleCanvasClick = () => {
-      if (document.pointerLockElement !== renderer.domElement) {
-        renderer.domElement.requestPointerLock?.();
+    let frame = 0;
+    let last = 0;
+    let elapsed = 0;
+    let lastScreenDraw = 0;
+    let lastPromptKey = '';
+    // Reuse movement vectors rather than allocating several THREE.Vector3 objects
+    // on every animation frame.
+    const forward = new THREE.Vector3();
+    const right = new THREE.Vector3();
+    const move = new THREE.Vector3();
+    const animate = (now: number) => {
+      frame = requestAnimationFrame(animate);
+      // A stable 30 FPS cap cuts GPU/CPU use substantially without affecting controls.
+      if (now - last < 1000 / 30) return;
+      const dt = Math.min((now - last) / 1000 || 0, 0.05); last = now; elapsed += dt;
+      forward.set(-Math.sin(state.yaw), 0, -Math.cos(state.yaw));
+      right.set(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
+      move.set(0, 0, 0);
+      if (state.keys.forward) move.add(forward); if (state.keys.backward) move.sub(forward);
+      if (state.keys.right) move.add(right); if (state.keys.left) move.sub(right);
+      if (move.lengthSq() > 0) {
+        move.normalize().multiplyScalar((state.keys.sprint ? 4.8 : 2.8) * dt);
+        const isBlocked = (x: number, z: number) => blockers.some((b) => x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ);
+        const nextX = THREE.MathUtils.clamp(state.pos.x + move.x, -4.35, 4.35);
+        const nextZ = THREE.MathUtils.clamp(state.pos.z + move.z, -4.25, 4.25);
+        // Resolve each axis separately so players can slide along furniture instead of sticking.
+        if (!isBlocked(nextX, state.pos.z)) state.pos.x = nextX;
+        if (!isBlocked(state.pos.x, nextZ)) state.pos.z = nextZ;
       }
-    };
+      state.pos.x = THREE.MathUtils.clamp(state.pos.x, -4.35, 4.35);
+      state.pos.z = THREE.MathUtils.clamp(state.pos.z, -4.25, 4.25);
+      camera.position.copy(state.pos);
+      camera.rotation.order = 'YXZ'; camera.rotation.y = state.yaw; camera.rotation.x = THREE.MathUtils.clamp(state.pitch, -0.75, 0.75);
 
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    renderer.domElement.addEventListener('mousedown', handleMouseDown);
-    renderer.domElement.addEventListener('click', handleCanvasClick);
-
-    const handleResize = () => {
-      if (!container) return;
-      camera.aspect = container.clientWidth / container.clientHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(container.clientWidth, container.clientHeight);
-    };
-    window.addEventListener('resize', handleResize);
-
-    // ==========================================
-    // 7. SMOOTH 60FPS PHYSICS & RENDER LOOP
-    // ==========================================
-    let animationFrameId: number;
-    let lastTime = performance.now();
-
-    const animate = (currentTime: number) => {
-      animationFrameId = requestAnimationFrame(animate);
-
-      const delta = Math.min((currentTime - lastTime) / 1000, 0.08);
-      lastTime = currentTime;
-
-      const state = stateRef.current;
-
-      // Update orientation
-      const euler = new THREE.Euler(state.cameraPitch, state.cameraYaw, 0, 'YXZ');
-      camera.quaternion.setFromEuler(euler);
-
-      // Determine movement intention
-      const forwardDir = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), state.cameraYaw);
-      const rightDir = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), state.cameraYaw);
-
-      const inputVector = new THREE.Vector3();
-      if (state.keys.forward) inputVector.add(forwardDir);
-      if (state.keys.backward) inputVector.sub(forwardDir);
-      if (state.keys.right) inputVector.add(rightDir);
-      if (state.keys.left) inputVector.sub(rightDir);
-
-      const isMoving = inputVector.lengthSq() > 0;
-      const speedMultiplier = state.keys.sprint ? 1.6 : 1.0;
-      const maxSpeed = 5.2 * speedMultiplier;
-      const acceleration = 36.0;
-      const damping = 9.5;
-
-      if (isMoving) {
-        inputVector.normalize();
-        state.velocity.x += inputVector.x * acceleration * delta;
-        state.velocity.z += inputVector.z * acceleration * delta;
-      }
-
-      // Clamp velocity to max speed
-      const currentSpeed = Math.sqrt(state.velocity.x * state.velocity.x + state.velocity.z * state.velocity.z);
-      if (currentSpeed > maxSpeed) {
-        state.velocity.x = (state.velocity.x / currentSpeed) * maxSpeed;
-        state.velocity.z = (state.velocity.z / currentSpeed) * maxSpeed;
-      }
-
-      // Smooth friction deceleration
-      state.velocity.x -= state.velocity.x * damping * delta;
-      state.velocity.z -= state.velocity.z * damping * delta;
-
-      // Apply movement to position
-      state.playerPos.x += state.velocity.x * delta;
-      state.playerPos.z += state.velocity.z * delta;
-
-      // Realistic subtle head bobbing when moving
-      if (isMoving && currentSpeed > 0.5) {
-        state.headBobTimer += delta * 11 * speedMultiplier;
-        camera.position.y = 1.7 + Math.sin(state.headBobTimer) * 0.045;
-
-        // Footsteps
-        state.stepDistance += currentSpeed * delta;
-        if (state.stepDistance > (state.keys.sprint ? 2.2 : 1.7)) {
-          sound.playFootstep();
-          state.stepDistance = 0;
+      let nearest: Prompt = null; let nearestDist = 1.8;
+      for (const target of interactive) {
+        const dist = state.pos.distanceTo(target.pos);
+        if (dist < nearestDist) {
+          nearestDist = dist;
+          nearest = target.type === 'ctf'
+            ? { type: 'ctf', target: target.ctf, message: 'OPEN SOCIAL TRACE NETWORK' }
+            : target.type === 'dataset'
+              ? { type: 'dataset', message: 'OPEN SOCIAL TRACE NETWORK' }
+              : { type: 'exit', message: 'EXIT TO COMMUNITY MAP' };
         }
-      } else {
-        camera.position.y += (1.7 - camera.position.y) * 0.15;
       }
-
-      // Wall boundaries collision & slide
-      const margin = 0.9;
-      const minX = -roomWidth / 2 + margin;
-      const maxX = roomWidth / 2 - margin;
-      const minZ = -roomLength / 2 + margin;
-      const maxZ = roomLength / 2 - margin;
-
-      if (state.playerPos.x < minX) {
-        state.playerPos.x = minX;
-        state.velocity.x = 0;
-      } else if (state.playerPos.x > maxX) {
-        state.playerPos.x = maxX;
-        state.velocity.x = 0;
+      const promptKey = nearest ? `${nearest.type}:${nearest.target?.id ?? ''}:${nearest.message}` : '';
+      if (promptKey !== lastPromptKey) {
+        lastPromptKey = promptKey;
+        state.prompt = nearest;
+        setActivePrompt(nearest);
+        if (nearest) sound.playHover();
       }
-
-      if (state.playerPos.z < minZ) {
-        state.playerPos.z = minZ;
-        state.velocity.z = 0;
-      } else if (state.playerPos.z > maxZ) {
-        state.playerPos.z = maxZ;
-        state.velocity.z = 0;
+      // CanvasTexture.needsUpdate triggers a GPU texture upload. Redraw the one
+      // animated terminal at 4 Hz; the scoreboard is static after initialization.
+      if (now - lastScreenDraw >= 250) {
+        if (datasetUnlocked) dataScreen.draw(elapsed); else ctfScreen.draw(elapsed);
+        lastScreenDraw = now;
       }
-
-      camera.position.x = state.playerPos.x;
-      camera.position.z = state.playerPos.z;
-
-      // Update animated objects
-      animatedObjects.forEach((obj) => obj.update(currentTime / 1000, delta));
-
-      // Proximity detection for CTF stations
-      let nearestPrompt: { type: 'ctf' | 'exit'; target?: CTFData; message: string } | null = null;
-      let minDistance = 2.8;
-
-      ctfObjects.forEach(({ ctf, pos }) => {
-        const dist = state.playerPos.distanceTo(pos);
-        if (dist < minDistance) {
-          minDistance = dist;
-          nearestPrompt = {
-            type: 'ctf',
-            target: ctf,
-            message: `ACCESS [${ctf.label} // CTF-${ctf.slot}]`
-          };
-        }
-      });
-
-      // Airlock exit proximity
-      const distToExit = state.playerPos.distanceTo(new THREE.Vector3(0, 1.7, roomLength / 2 - 0.5));
-      if (distToExit < 2.5 && (!nearestPrompt || distToExit < minDistance)) {
-        nearestPrompt = {
-          type: 'exit',
-          message: 'EXIT AIRLOCK & RETURN TO COMMUNITY MAP'
-        };
-      }
-
-      if (JSON.stringify(nearestPrompt) !== JSON.stringify(state.activePrompt)) {
-        state.activePrompt = nearestPrompt;
-        setActivePrompt(nearestPrompt);
-        if (nearestPrompt) sound.playHover();
-      }
-
-      // Compass & HUD update
-      setCompassHeading(Math.round((-state.cameraYaw * 180) / Math.PI) % 360);
-      setPlayerCoord({
-        x: Math.round(state.playerPos.x * 10) / 10,
-        z: Math.round(state.playerPos.z * 10) / 10
-      });
-
       renderer.render(scene, camera);
     };
+    frame = requestAnimationFrame(animate);
 
-    animationFrameId = requestAnimationFrame(animate);
-
-    // Cleanup
     return () => {
-      cancelAnimationFrame(animationFrameId);
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-      window.removeEventListener('resize', handleResize);
-      if (renderer.domElement) {
-        renderer.domElement.removeEventListener('mousedown', handleMouseDown);
-        renderer.domElement.removeEventListener('click', handleCanvasClick);
-        if (container.contains(renderer.domElement)) {
-          container.removeChild(renderer.domElement);
-        }
-      }
+      cancelAnimationFrame(frame);
+      if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
+      window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('keyup', handleKeyUp); window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('mousemove', handleMouseMove); window.removeEventListener('mouseup', handleMouseUp); window.removeEventListener('resize', resize);
+      renderer.domElement.removeEventListener('mousedown', handleMouseDown); renderer.domElement.removeEventListener('click', handleCanvasClick);
+      if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
+      if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement);
       renderer.dispose();
+      scene.traverse((obj) => { const mesh = obj as THREE.Mesh; if (mesh.geometry) mesh.geometry.dispose(); });
+      materials.forEach((m) => m.dispose()); textures.forEach((t) => t.dispose());
     };
-  }, [building]);
+  }, [building.id, visibleCTF?.completed, theme]);
 
   return (
     <div className="relative w-full h-full flex-1 overflow-hidden select-none bg-black">
-      {/* 3D WebGL Canvas */}
       <div ref={mountRef} className="w-full h-full cursor-crosshair" />
-
-      {/* Reticle */}
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
-        <div className={`relative transition-all duration-200 ${activePrompt ? 'scale-125' : 'scale-100'}`}>
-          <div className="w-6 h-6 border border-yellow-500/50 rounded-full flex items-center justify-center">
-            <div className={`w-1.5 h-1.5 rounded-full transition-colors ${activePrompt ? 'bg-yellow-400' : 'bg-yellow-500/60'}`} />
-          </div>
-          {activePrompt && (
-            <div className="absolute -inset-2 border border-yellow-400 rounded-full animate-ping opacity-75" />
-          )}
-        </div>
+      <div className="absolute top-4 left-4 z-20 bg-[#081019]/90 border border-white/10 p-3 rounded-lg font-mono-code text-xs backdrop-blur-md pointer-events-none">
+        <div className="text-white font-bold tracking-widest">{building.name} <span style={{ color: `#${theme.primary.toString(16).padStart(6, '0')}` }}>// {theme.label}</span></div>
+        <div className="text-slate-300 mt-1 text-[10px]">{theme.detail}</div>
+        {sprinting && <div className="mt-2 text-[10px] text-amber-300 flex items-center gap-1"><Zap size={10} className="inline"/> SPRINT ACTIVE</div>}
       </div>
-
-      {/* PROXIMITY INTERACTION BANNER */}
+      <div className="absolute top-4 right-4 z-20 flex gap-2 pointer-events-none">
+        <div className="bg-[#081019]/90 border border-white/10 rounded-lg px-3 py-2 text-[10px] text-slate-300 flex items-center gap-2">{visibleCTF?.completed ? <Database size={14} style={{ color: `#${theme.primary.toString(16).padStart(6, '0')}` }}/> : <FileSearch size={14} style={{ color: `#${theme.accent.toString(16).padStart(6, '0')}` }}/>} SOCIAL TRACE TERMINAL // ACCOUNT MIRROR</div>
+      </div>
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+        <div className={`w-5 h-5 rounded-full border ${activePrompt ? 'border-amber-300 scale-125' : 'border-white/40'} flex items-center justify-center`}><div className={`w-1 h-1 rounded-full ${activePrompt ? 'bg-amber-300' : 'bg-white/60'}`} /></div>
+      </div>
       {activePrompt && (
-        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-30 font-mono-code text-center pointer-events-auto">
-          <button
-            onClick={() => {
-              sound.playClick();
-              if (activePrompt.type === 'ctf' && activePrompt.target) {
-                onInteractCTF(activePrompt.target);
-              } else if (activePrompt.type === 'exit') {
-                onReturnToMap();
-              }
-            }}
-            className="px-6 py-3 rounded-lg bg-[#0e141e]/95 border-2 border-yellow-400 text-yellow-300 font-tech font-bold text-sm tracking-wider shadow-[0_0_30px_rgba(250,204,21,0.55)] hover:bg-yellow-400 hover:text-black transition-all cursor-pointer flex items-center gap-3 backdrop-blur-md animate-bounce"
-          >
-            <span className="px-2 py-0.5 rounded bg-black/60 text-white border border-yellow-400/60 text-xs">
-              PRESS [E] OR CLICK
-            </span>
-            <span>{activePrompt.message}</span>
+        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-30 font-mono-code text-center">
+          <button onClick={() => {
+            sound.playClick();
+            if (activePrompt.type === 'ctf' && activePrompt.target) onInteractCTF(activePrompt.target);
+            else if (activePrompt.type === 'dataset' && visibleCTF?.completed) onOpenDataset?.();
+            else onReturnToMap();
+          }} className="px-5 py-3 rounded-lg bg-[#081019]/95 border-2 border-amber-300 text-amber-200 font-bold text-xs tracking-wide shadow-[0_0_24px_rgba(251,191,36,0.25)] hover:bg-amber-300 hover:text-black transition-colors flex items-center gap-3">
+            <span className="px-2 py-1 rounded bg-black/50 border border-amber-300/40">[E] / CLICK</span><span>{activePrompt.message}</span>
           </button>
         </div>
       )}
-
-      {/* Top Left: Themed Building Indicator */}
-      <div className="absolute top-4 left-4 z-20 bg-[#0c1017]/90 border border-[#232f42] p-3 rounded font-mono-code text-xs backdrop-blur-md pointer-events-none">
-        <div className="text-yellow-400 font-tech font-bold text-sm tracking-widest flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-yellow-400 animate-ping" />
-          <span>FACILITY INTERIOR // {building.name}</span>
-        </div>
-        <div className="text-[11px] text-zinc-300 mt-1">
-          {building.sectorTitle}
-        </div>
-        <div className="flex items-center gap-3 mt-2 text-[10px] text-zinc-400 pt-1.5 border-t border-zinc-800">
-          <span>POS: [{playerCoord.x}, {playerCoord.z}]</span>
-          <span>HEADING: {compassHeading}°</span>
-          {isSprinting && <span className="text-yellow-400 font-bold flex items-center gap-0.5"><Zap size={10} /> SPRINTING</span>}
-        </div>
-      </div>
-
-      {/* Top Right: CTF Terminals in this Room */}
-      <div className="absolute top-4 right-4 z-20 bg-[#0c1017]/90 border border-[#232f42] p-3 rounded font-mono-code text-xs backdrop-blur-md pointer-events-auto">
-        <div className="text-zinc-400 text-[10px] uppercase tracking-wider mb-1.5 font-tech">
-          ROOM CTF TERMINALS
-        </div>
-        <div className="space-y-1.5">
-          {building.ctfs.map((ctf) => (
-            <button
-              key={ctf.id}
-              onClick={() => {
-                sound.playClick();
-                onInteractCTF(ctf);
-              }}
-              className="w-full flex items-center justify-between gap-3 px-2.5 py-1.5 rounded bg-[#131a26] hover:bg-[#1a2333] border border-[#2b394d] text-left cursor-pointer group transition-colors"
-            >
-              <div className="flex items-center gap-1.5">
-                {ctf.completed ? (
-                  <CheckCircle2 size={13} className="text-emerald-400" />
-                ) : (
-                  <Lock size={13} className="text-yellow-400" />
-                )}
-                <span className="text-zinc-200 group-hover:text-yellow-300 font-tech text-xs">
-                  {ctf.label}
-                </span>
-              </div>
-              <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
-                ctf.completed ? 'text-emerald-300 bg-emerald-950/60' : 'text-yellow-300 bg-yellow-950/60'
-              }`}>
-                {ctf.completed ? 'SECURED' : 'OPEN'}
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Bottom Controls Bar */}
-      <div className="absolute bottom-3 left-4 right-4 z-20 flex flex-wrap items-center justify-between text-[11px] font-mono-code text-zinc-400 bg-[#0b0e14]/90 px-4 py-2 rounded-lg border border-[#202936] backdrop-blur-md">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-1.5 text-yellow-400 font-semibold">
-            <Move size={14} />
-            <span>[W][A][S][D] MOVE</span>
-          </div>
-          <span className="text-zinc-600">|</span>
-          <div className="text-zinc-300">
-            <span>[SHIFT] SPRINT</span>
-          </div>
-          <span className="text-zinc-600">|</span>
-          <div className="flex items-center gap-1.5 text-zinc-300">
-            <MousePointer size={14} />
-            <span>CLICK TO LOCK LOOK</span>
-          </div>
-          <span className="text-zinc-600">|</span>
-          <div className="text-yellow-300 font-bold">
-            <span>[E] INTERACT</span>
-          </div>
-        </div>
-
-        <button
-          onClick={() => {
-            sound.playAirlock();
-            onReturnToMap();
-          }}
-          className="flex items-center gap-1.5 px-3 py-1 rounded bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-400 border border-yellow-500/40 text-xs font-tech font-bold cursor-pointer transition-colors"
-        >
-          <ArrowLeft size={13} />
-          <span>RETURN TO COMMUNITY MAP</span>
-        </button>
+      <div className="absolute bottom-3 left-4 right-4 z-20 flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono-code text-slate-300 bg-[#081019]/90 px-4 py-2 rounded-lg border border-white/10 backdrop-blur-md">
+        <div>WASD MOVE · MOUSE LOOK · SHIFT SPRINT · E INTERACT</div>
+        <div className="flex items-center gap-2"><FileSearch size={13} className="text-amber-300"/><span>TRACE NETWORK ONLINE</span><span className="text-slate-500">·</span><span>COMPACT ROOM 01/01</span></div>
       </div>
     </div>
   );
 };
+
+export default ThreeRoomFPP;

@@ -1,32 +1,28 @@
-# React + TypeScript + Vite
+# MANU Protocol — Yellow Zone Missing Dataset RPG
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+MANU Protocol is a dark, exploratory, text-based investigation RPG set in Sanctuary Zero. The Yellow Zone's five buildings—Hospital, School, Museum, Sports Complex, and Society—are chapters in one mystery. The player pursues a missing dataset through a local mirror of fictional social-media accounts, comparing posts, highlights, stories, notes, comments, timestamps, and visual artifacts.
 
-Currently, two official plugins are available:
+## Start the project
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Open the local URL printed by Vite. Use the existing map to enter a building, then interact with its terminal to open the shared investigation network. No real Instagram account or external service is required.
+
+## Main files
+
+- `YELLOW_ZONE_STORY_BIBLE.md` — developer-only canonical story, account network, artifact inventory, full solution, and release checklist. Contains spoilers.
+- `src/data/investigationData.ts` — all ten fictional accounts, 34 artifacts, recovered dataset, and canonical flag.
+- `src/components/InvestigationTerminal.tsx` — shared terminal UI, account browser, evidence board, flag submission, and recovered dataset view.
+- `src/data/protocolData.ts` — five buildings, map positions, visual themes, and room metadata.
+- `src/components/ThreeRoomFPP.tsx` and `src/three/rooms/` — first-person room environments.
+
+## Player loop
+
+Explore a building → open the local social mirror → inspect and bookmark evidence → cross-reference artifacts from the other buildings → reconstruct the export signature → submit one common flag → recover the Continuity Ledger.
+
+## Prototype notes
+
+The story, posts, and accounts are fictional. No external social-media network is contacted. The final answer is currently checked client-side and is visible in bundled source, so move validation and completion state to a server before a public competitive release. Evidence bookmarks and successful recovery persist in local storage.

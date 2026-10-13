@@ -9,7 +9,6 @@ import {
   Terminal, 
   CheckCircle2, 
   CircleDot,
-  FileText
 } from 'lucide-react';
 
 interface BuildingPanelProps {
@@ -27,21 +26,25 @@ export const BuildingPanel: React.FC<BuildingPanelProps> = ({
 }) => {
   if (!building) return null;
 
-  const solvedCount = building.ctfs.filter(c => c.completed).length;
+  const visibleCtfs = building.ctfs.slice(0, 1);
+  const solvedCount = visibleCtfs.filter(c => c.completed).length;
 
   return (
-    <aside className="w-80 lg:w-96 bg-[#0f141d]/95 border-l border-[#273244] p-4 flex flex-col justify-between h-full backdrop-blur-md font-mono-code text-xs select-none shadow-2xl relative z-30">
+    <aside className="absolute inset-y-0 right-0 w-80 max-w-[92vw] lg:w-96 overflow-y-auto bg-[#0f141d]/95 border-l border-[#273244] p-4 flex flex-col justify-between h-full backdrop-blur-md font-mono-code text-xs select-none shadow-2xl z-40">
       {/* Top Header */}
       <div>
         <div className="flex items-center justify-between border-b border-[#243042] pb-3 mb-4">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-yellow-400 animate-ping" />
             <span className="font-tech text-yellow-400 font-bold tracking-widest text-sm">
-              FACILITY TELEMETRY
+              INVESTIGATION NODE
             </span>
           </div>
 
           <button
+            type="button"
+            aria-label={`Close ${building.name} inspection panel`}
+            title="Close building details"
             onClick={() => {
               sound.playClick();
               onClose();
@@ -94,15 +97,15 @@ export const BuildingPanel: React.FC<BuildingPanelProps> = ({
           </div>
         </div>
 
-        {/* CTF Terminal Nodes Summary */}
+        {/* Shared social investigation node */}
         <div className="mb-4">
           <div className="flex items-center justify-between text-[10px] text-zinc-400 uppercase tracking-wider mb-1.5 font-tech">
-            <span>Terminal Intercept Points</span>
-            <span className="text-yellow-400 font-mono-code font-bold">{solvedCount}/2 Solved</span>
+            <span>Social Trace Access</span>
+            <span className="text-yellow-400 font-mono-code font-bold">1 Local Account</span>
           </div>
 
           <div className="space-y-2">
-            {building.ctfs.map((ctf) => (
+            {visibleCtfs.map((ctf) => (
               <div
                 key={ctf.id}
                 className={`p-2 rounded border flex items-center justify-between ${
@@ -119,10 +122,10 @@ export const BuildingPanel: React.FC<BuildingPanelProps> = ({
                   )}
                   <div>
                     <div className="font-tech font-bold text-xs tracking-wider">
-                      {ctf.label}
+                      Shared Account Network
                     </div>
                     <div className="text-[10px] text-zinc-400">
-                      CTF // {ctf.slot} &bull; {ctf.subtitle}
+                      SOCIAL MIRROR // {building.name}
                     </div>
                   </div>
                 </div>
@@ -130,27 +133,13 @@ export const BuildingPanel: React.FC<BuildingPanelProps> = ({
                 <span className={`text-[9px] px-1 py-0.5 rounded font-mono-code ${
                   ctf.completed ? 'bg-emerald-500/20 text-emerald-300' : 'bg-zinc-800 text-zinc-400'
                 }`}>
-                  {ctf.completed ? 'SECURED' : 'LOCKED'}
+                  ONLINE
                 </span>
               </div>
             ))}
           </div>
         </div>
 
-        {/* Associated Resident Link */}
-        <button
-          onClick={() => {
-            sound.playClick();
-            onOpenResidentDossier && onOpenResidentDossier(building.residentId);
-          }}
-          className="w-full flex items-center justify-between p-2 rounded border border-[#2b3749] bg-[#121822] hover:border-yellow-500/50 hover:bg-[#18212e] text-zinc-300 transition-colors cursor-pointer group text-[11px]"
-        >
-          <div className="flex items-center gap-2">
-            <FileText size={14} className="text-yellow-400 group-hover:scale-110 transition-transform" />
-            <span className="font-tech">INSPECT SECTOR RESIDENT DOSSIER</span>
-          </div>
-          <span className="text-yellow-400 font-mono-code text-[10px]">&rarr;</span>
-        </button>
       </div>
 
       {/* Bottom CTA to Enter Building Room */}
@@ -166,7 +155,7 @@ export const BuildingPanel: React.FC<BuildingPanelProps> = ({
           <span>[ ENTER ENTRANCE ROOM ]</span>
         </button>
         <div className="text-center text-[10px] text-zinc-500 mt-2 font-mono-code">
-          TRANSITIONS TO FIRST-PERSON 3D INTERIOR
+          ENTER TO INVESTIGATE THE SOCIAL TRACE NETWORK
         </div>
       </div>
     </aside>

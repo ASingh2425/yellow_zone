@@ -15,7 +15,7 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
   onClearLogs
 }) => {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 select-none">
+    <div role="dialog" aria-modal="true" aria-label="MANU system telemetry audit log" className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 select-none">
       <div className="max-w-2xl w-full bg-[#0d121a] border-2 border-yellow-500/60 rounded-lg shadow-[0_0_50px_rgba(250,204,21,0.25)] flex flex-col overflow-hidden font-mono-code text-xs relative">
         <div className="bg-[#121824] px-5 py-3 border-b border-[#253245] flex items-center justify-between">
           <div className="flex items-center gap-2.5">

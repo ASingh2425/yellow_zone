@@ -45,7 +45,7 @@ export const ResidentRecordPanel: React.FC<ResidentRecordPanelProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 select-none">
+    <div role="dialog" aria-modal="true" aria-label="Resident identity archive" className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 select-none">
       <div className="max-w-4xl w-full h-[85vh] bg-[#0d121a] border-2 border-yellow-500/60 rounded-lg shadow-[0_0_50px_rgba(250,204,21,0.25)] flex flex-col overflow-hidden font-mono-code text-xs relative">
         {/* Header */}
         <div className="bg-[#121824] px-5 py-3 border-b border-[#253245] flex items-center justify-between">
@@ -255,7 +255,7 @@ export const ResidentRecordPanel: React.FC<ResidentRecordPanelProps> = ({
         {/* Footer */}
         <div className="bg-[#10151f] px-5 py-3 border-t border-[#253245] flex items-center justify-between">
           <span className="text-[11px] text-zinc-500">
-            SOLVE CTF TERMINALS IN RELATED COMMUNITY BUILDINGS TO RESTORE CITIZEN DOSSIERS
+            CITIZEN DOSSIERS REMAIN PARTIAL // RECONSTRUCT THE SHARED DATASET TO RESTORE THE FULL RECORD
           </span>
           <button
             onClick={() => {

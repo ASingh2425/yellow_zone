@@ -18,6 +18,7 @@ interface BuildingMarkerProps {
   onHover: (id: string | null) => void;
   onSelect: (building: BuildingData) => void;
   onEnter: (building: BuildingData) => void;
+  routeOrder: number;
 }
 
 export const BuildingMarker: React.FC<BuildingMarkerProps> = ({
@@ -26,17 +27,19 @@ export const BuildingMarker: React.FC<BuildingMarkerProps> = ({
   isSelected,
   onHover,
   onSelect,
-  onEnter
+  onEnter,
+  routeOrder
 }) => {
-  const solvedCount = building.ctfs.filter(c => c.completed).length;
-  const isComplete = solvedCount === 2;
+  const visibleCtfs = building.ctfs.slice(0, 1);
+  const solvedCount = visibleCtfs.filter(c => c.completed).length;
+  const isComplete = solvedCount === 1;
 
   // Themed visual styling for each small node
   const getBuildingAccent = () => {
     switch (building.id) {
       case 'hospital':
         return {
-          icon: <Cross size={18} className="text-teal-400" />,
+          icon: <Cross size={15} className="text-teal-400" />,
           nodeBorder: 'border-teal-400 shadow-[0_0_18px_rgba(20,184,166,0.6)] bg-[#091b22]',
           ringColor: '#14b8a6',
           titleColor: 'text-teal-300',
@@ -44,7 +47,7 @@ export const BuildingMarker: React.FC<BuildingMarkerProps> = ({
         };
       case 'school':
         return {
-          icon: <GraduationCap size={18} className="text-sky-400" />,
+          icon: <GraduationCap size={15} className="text-sky-400" />,
           nodeBorder: 'border-sky-400 shadow-[0_0_18px_rgba(56,189,248,0.6)] bg-[#0d1a29]',
           ringColor: '#38bdf8',
           titleColor: 'text-sky-300',
@@ -52,7 +55,7 @@ export const BuildingMarker: React.FC<BuildingMarkerProps> = ({
         };
       case 'museum':
         return {
-          icon: <Landmark size={18} className="text-amber-400" />,
+          icon: <Landmark size={15} className="text-amber-400" />,
           nodeBorder: 'border-amber-400 shadow-[0_0_18px_rgba(250,204,21,0.6)] bg-[#1c1329]',
           ringColor: '#facc15',
           titleColor: 'text-amber-300',
@@ -60,7 +63,7 @@ export const BuildingMarker: React.FC<BuildingMarkerProps> = ({
         };
       case 'sports':
         return {
-          icon: <Dumbbell size={18} className="text-orange-400" />,
+          icon: <Dumbbell size={15} className="text-orange-400" />,
           nodeBorder: 'border-orange-400 shadow-[0_0_18px_rgba(249,115,22,0.6)] bg-[#24130b]',
           ringColor: '#f97316',
           titleColor: 'text-orange-300',
@@ -68,7 +71,7 @@ export const BuildingMarker: React.FC<BuildingMarkerProps> = ({
         };
       case 'society':
         return {
-          icon: <Home size={18} className="text-fuchsia-400" />,
+          icon: <Home size={15} className="text-fuchsia-400" />,
           nodeBorder: 'border-fuchsia-400 shadow-[0_0_18px_rgba(217,70,239,0.6)] bg-[#210d29]',
           ringColor: '#d946ef',
           titleColor: 'text-fuchsia-300',
@@ -78,6 +81,9 @@ export const BuildingMarker: React.FC<BuildingMarkerProps> = ({
   };
 
   const accent = getBuildingAccent();
+  // The inspection drawer becomes the primary detail surface after selection.
+  // Keep hover tooltips only for unselected nodes to avoid stacked duplicate panels.
+  const showTooltip = isHovered && !isSelected;
 
   return (
     <div
@@ -96,27 +102,28 @@ export const BuildingMarker: React.FC<BuildingMarkerProps> = ({
         onSelect(building);
       }}
     >
+      <div className="absolute -top-5 left-1/2 z-40 -translate-x-1/2 pointer-events-none">
+        <span className="flex h-6 min-w-6 items-center justify-center rounded-md border border-yellow-300 bg-yellow-400 px-1.5 text-[10px] font-black text-black shadow-[0_0_16px_rgba(250,204,21,0.35)]">{String(routeOrder).padStart(2, '0')}</span>
+      </div>
       {/* ========================================================= */}
       {/* THE SMALL NODE (Scales up subtly on hover, not overly large) */}
       {/* ========================================================= */}
       <div 
         className={`relative flex items-center justify-center transition-all duration-200 ease-out ${
-          isHovered || isSelected ? 'scale-120 z-30' : 'scale-100 hover:scale-115'
+          isHovered || isSelected ? 'scale-[1.08] z-30' : 'scale-100'
         }`}
       >
         {/* Pulsing Outer Radar Ring */}
         <div 
-          className={`absolute -inset-2.5 rounded-full border transition-all duration-300 pointer-events-none ${
-            isHovered 
-              ? 'opacity-100 animate-ping' 
-              : 'opacity-40'
+          className={`absolute -inset-1.5 rounded-full border transition-all duration-200 pointer-events-none ${
+            isHovered ? 'opacity-80' : 'opacity-35'
           }`}
           style={{ borderColor: accent.ringColor }}
         />
 
         {/* Small Node Core Circle (50px diameter) */}
         <div 
-          className={`w-12 h-12 rounded-full border-2 flex items-center justify-center transition-all duration-200 backdrop-blur-md ${accent.nodeBorder} ${
+          className={`w-10 h-10 rounded-full border-[1.5px] flex items-center justify-center transition-all duration-200 backdrop-blur-md ${accent.nodeBorder} ${
             isSelected ? 'ring-2 ring-yellow-400 ring-offset-2 ring-offset-black' : ''
           }`}
         >
@@ -135,22 +142,22 @@ export const BuildingMarker: React.FC<BuildingMarkerProps> = ({
       {/* COMPACT PERMANENT LABEL TAG BELOW THE NODE */}
       {/* ========================================================= */}
       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 flex flex-col items-center pointer-events-none whitespace-nowrap">
-        <div className={`px-2 py-0.5 rounded text-[10px] font-tech font-bold uppercase tracking-wider border shadow-md ${
+        <div className={`px-1.5 py-0.5 rounded text-[8px] font-tech font-bold uppercase tracking-[0.08em] border shadow-md ${
           isHovered ? 'bg-[#182333] text-white border-yellow-400' : 'bg-[#0b1017]/90 text-zinc-300 border-[#1f2d3f]'
         }`}>
-          {building.name.replace('PLAYGROUND / CLUB / ', '')}
+          {building.id === 'society' ? 'SOCIETY' : building.id === 'sports' ? 'SPORTS COMPLEX' : building.name}
         </div>
-        <div className="text-[9px] text-zinc-500 mt-0.5 font-bold">
-          {solvedCount}/2 CTF
-        </div>
+        {isHovered && (
+          <div className="text-[7px] text-zinc-500 mt-0.5 font-bold">TRACE NODE ACTIVE</div>
+        )}
       </div>
 
       {/* ========================================================= */}
       {/* COMPACT HOVER TOOLTIP / ACTION POPOVER (Appears on hover) */}
       {/* ========================================================= */}
-      {isHovered && (
+      {showTooltip && (
         <div 
-          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 w-56 bg-[#0c121b]/95 border border-yellow-400/80 p-3 rounded-lg shadow-[0_0_25px_rgba(0,0,0,0.9)] z-50 backdrop-blur-md animate-in fade-in zoom-in-95 duration-150"
+          className={`absolute ${building.gridPos.y <= 30 ? 'top-full mt-3' : 'bottom-full mb-3'} left-1/2 -translate-x-1/2 w-56 bg-[#0c121b]/95 border border-yellow-400/80 p-3 rounded-lg shadow-[0_0_25px_rgba(0,0,0,0.9)] z-50 backdrop-blur-md animate-in fade-in zoom-in-95 duration-150`}
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
@@ -168,7 +175,7 @@ export const BuildingMarker: React.FC<BuildingMarkerProps> = ({
             {building.shortDescription}
           </p>
 
-          {/* Status & CTF Count */}
+          {/* Building status */}
           <div className="flex items-center justify-between text-[9px] mb-2 font-mono-code">
             <span className="text-zinc-500">STATUS:</span>
             <span className="text-yellow-300 font-semibold">{building.status}</span>

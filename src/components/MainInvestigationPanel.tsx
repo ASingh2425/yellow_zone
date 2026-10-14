@@ -150,22 +150,23 @@ export const MainFlagSubmissionStrip: React.FC<MainFlagSubmissionStripProps> = (
   const submitFlag = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (flagInput.trim().toUpperCase() === CANONICAL_FLAG) {
-      try { window.localStorage.setItem(STORAGE_KEYS.solved, 'true'); } catch { /* The current page can still show the recovered state. */ }
-      setSolved(true);
-      setFlagMessage('CONGRATULATIONS // CONTINUITY LEDGER RECOVERED');
-      setRowsOpen(false);
-      setDatasetSearch('');
-      window.dispatchEvent(new Event('manu-ledger-state-change'));
-      onFlagResult('correct');
-      sound.playClick();
-
-      // Trigger automatic atomic sync to central database
-      setSyncStatus('SYNCING TO CENTRAL LEDGER...');
-      const syncRes = await syncYellowZoneToSupabase();
+      const teamId = getResolvedTeamId();
+      setSyncStatus('SYNCING TO CENTRAL LEDGER & VERIFYING +200 PTS...');
+      const syncRes = await syncYellowZoneToSupabase(teamId);
       if (syncRes.success) {
-        setSyncStatus('CENTRAL LEDGER SYNCHRONIZED // +200 PTS AWARDED · BLUE ZONE UNLOCKED');
+        try { window.localStorage.setItem(STORAGE_KEYS.solved, 'true'); } catch {}
+        setSolved(true);
+        setFlagMessage('CONGRATULATIONS // CONTINUITY LEDGER RECOVERED (+200 PTS)');
+        setSyncStatus(`CENTRAL LEDGER SYNCHRONIZED // TOTAL SCORE: ${syncRes.score || 300} PTS · BLUE ZONE UNLOCKED`);
+        setRowsOpen(false);
+        setDatasetSearch('');
+        window.dispatchEvent(new Event('manu-ledger-state-change'));
+        onFlagResult('correct');
+        sound.playClick();
       } else {
-        setSyncStatus('LOCAL SOLVE RECORDED (OFFLINE CACHED)');
+        setFlagMessage(`CENTRAL SYNC REJECTED: ${syncRes.error || 'Solve verification failed'}. Please retry.`);
+        setSyncStatus('SYNC FAILED // CENTRAL HUB REJECTED SUBMISSION');
+        onFlagResult('wrong');
       }
     } else {
       setFlagMessage('SIGNATURE REJECTED // EVIDENCE DOES NOT RECONCILE');

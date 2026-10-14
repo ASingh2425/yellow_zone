@@ -11,6 +11,7 @@ import {
   SOCIAL_ACCOUNTS, BUILDING_NAMES, STORAGE_KEYS,
   type ContentTab, type SocialAccount, type SocialArtifact
 } from '../data/investigationData';
+import { getResolvedTeamId } from '../utils/supabaseSync';
 
 type TerminalTab = ContentTab;
 const TABS: { id: TerminalTab; label: string; icon: React.ReactNode }[] = [
@@ -103,7 +104,14 @@ const safeReadList = (key: string): string[] => {
   catch { return []; }
 };
 const safeReadSolved = (): boolean => {
-  try { return window.localStorage.getItem(STORAGE_KEYS.solved) === 'true'; } catch { return false; }
+  const teamId = getResolvedTeamId();
+  if (!teamId) return false;
+  try {
+    return window.localStorage.getItem(`yellow_solved_${teamId}`) !== null ||
+           window.localStorage.getItem(`${STORAGE_KEYS.solved}_${teamId}`) === 'true';
+  } catch {
+    return false;
+  }
 };
 
 interface InvestigationTerminalProps { building: BuildingData; onClose: () => void; }
@@ -125,7 +133,15 @@ export const InvestigationTerminal: React.FC<InvestigationTerminalProps> = ({ bu
     try { window.localStorage.setItem(STORAGE_KEYS.saved, JSON.stringify(savedIds)); } catch { /* Storage is optional; investigation still works in-memory. */ }
   }, [savedIds]);
   useEffect(() => {
-    try { window.localStorage.setItem(STORAGE_KEYS.solved, String(solved)); } catch { /* Storage is optional. */ }
+    const teamId = getResolvedTeamId();
+    if (!teamId) return;
+    try {
+      if (solved) {
+        window.localStorage.setItem(`${STORAGE_KEYS.solved}_${teamId}`, 'true');
+      } else {
+        window.localStorage.removeItem(`${STORAGE_KEYS.solved}_${teamId}`);
+      }
+    } catch { /* Storage is optional. */ }
   }, [solved]);
   useEffect(() => {
     const syncSolved = () => setSolved(safeReadSolved());

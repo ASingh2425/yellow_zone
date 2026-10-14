@@ -14,12 +14,18 @@ import { SystemLogsModal } from './components/SystemLogsModal';
 import { SectorGate } from './components/SectorGate';
 import { sound } from './utils/sound';
 import { STORAGE_KEYS } from './data/investigationData';
-import { getResolvedTeamId } from './utils/supabaseSync';
+import { getResolvedTeamId, fetchYellowZoneProgress, clearYellowZoneLocalSolved } from './utils/supabaseSync';
 
 export function App() {
   const teamId = getResolvedTeamId();
   const [isSolved, setIsSolved] = useState<boolean>(() => {
-    try { return window.localStorage.getItem(STORAGE_KEYS.solved) === 'true'; } catch { return false; }
+    if (!teamId) return false;
+    try {
+      return window.localStorage.getItem(`yellow_solved_${teamId}`) !== null ||
+             window.localStorage.getItem(`${STORAGE_KEYS.solved}_${teamId}`) === 'true';
+    } catch {
+      return false;
+    }
   });
 
   // Protocol State
@@ -43,20 +49,39 @@ export function App() {
 
   useEffect(() => {
     const checkSolved = () => {
+      const currentTeam = getResolvedTeamId();
+      if (!currentTeam) {
+        setIsSolved(false);
+        return;
+      }
       try {
-        setIsSolved(window.localStorage.getItem(STORAGE_KEYS.solved) === 'true');
+        const solved = window.localStorage.getItem(`yellow_solved_${currentTeam}`) !== null ||
+                       window.localStorage.getItem(`${STORAGE_KEYS.solved}_${currentTeam}`) === 'true';
+        setIsSolved(solved);
       } catch {
         setIsSolved(false);
       }
     };
     checkSolved();
+
+    if (teamId) {
+      fetchYellowZoneProgress(teamId).then((res) => {
+        if (!res.isCompleted) {
+          clearYellowZoneLocalSolved(teamId);
+          setIsSolved(false);
+        } else {
+          setIsSolved(true);
+        }
+      });
+    }
+
     window.addEventListener('manu-ledger-state-change', checkSolved);
     window.addEventListener('storage', checkSolved);
     return () => {
       window.removeEventListener('manu-ledger-state-change', checkSolved);
       window.removeEventListener('storage', checkSolved);
     };
-  }, []);
+  }, [teamId]);
 
   useEffect(() => {
     if (!zoneFeedback) return;

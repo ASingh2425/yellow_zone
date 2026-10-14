@@ -24,8 +24,14 @@ const STORY_CHAPTERS: StoryChapter[] = [
 ];
 
 const hasRecoveredLedger = (): boolean => {
-  try { return window.localStorage.getItem(STORAGE_KEYS.solved) === 'true'; }
-  catch { return false; }
+  const teamId = getResolvedTeamId();
+  if (!teamId) return false;
+  try {
+    return window.localStorage.getItem(`yellow_solved_${teamId}`) !== null ||
+           window.localStorage.getItem(`${STORAGE_KEYS.solved}_${teamId}`) === 'true';
+  } catch {
+    return false;
+  }
 };
 
 interface MainInvestigationPanelProps {
@@ -127,11 +133,25 @@ export const MainFlagSubmissionStrip: React.FC<MainFlagSubmissionStripProps> = (
   // Hydrate solved state from Supabase on mount
   useEffect(() => {
     const teamId = getResolvedTeamId();
+    if (!teamId) {
+      setSolved(false);
+      return;
+    }
     fetchYellowZoneProgress(teamId).then(res => {
       if (res.isCompleted) {
-        try { window.localStorage.setItem(STORAGE_KEYS.solved, 'true'); } catch {}
+        try { window.localStorage.setItem(`${STORAGE_KEYS.solved}_${teamId}`, 'true'); } catch {}
         setSolved(true);
         setSyncStatus('CENTRAL LEDGER VERIFIED // +200 PTS AWARDED · BLUE ZONE UNLOCKED');
+        window.dispatchEvent(new Event('manu-ledger-state-change'));
+      } else {
+        try {
+          window.localStorage.removeItem(STORAGE_KEYS.solved);
+          window.localStorage.removeItem(`${STORAGE_KEYS.solved}_${teamId}`);
+          window.localStorage.removeItem(`yellow_solved_${teamId}`);
+          window.localStorage.removeItem('manu_solved');
+        } catch {}
+        setSolved(false);
+        setSyncStatus('');
         window.dispatchEvent(new Event('manu-ledger-state-change'));
       }
     });
@@ -154,7 +174,12 @@ export const MainFlagSubmissionStrip: React.FC<MainFlagSubmissionStripProps> = (
       setSyncStatus('SYNCING TO CENTRAL LEDGER & VERIFYING +200 PTS...');
       const syncRes = await syncYellowZoneToSupabase(teamId);
       if (syncRes.success) {
-        try { window.localStorage.setItem(STORAGE_KEYS.solved, 'true'); } catch {}
+        try {
+          if (teamId) {
+            window.localStorage.setItem(`${STORAGE_KEYS.solved}_${teamId}`, 'true');
+            window.localStorage.setItem(`yellow_solved_${teamId}`, 'true');
+          }
+        } catch {}
         setSolved(true);
         setFlagMessage('CONGRATULATIONS // CONTINUITY LEDGER RECOVERED (+200 PTS)');
         setSyncStatus(`CENTRAL LEDGER SYNCHRONIZED // TOTAL SCORE: ${syncRes.score || 300} PTS · BLUE ZONE UNLOCKED`);

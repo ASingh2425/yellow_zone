@@ -92,7 +92,29 @@ export const SystemHeader: React.FC<SystemHeaderProps> = ({
             <div className="flex items-center gap-2 text-[11px] text-zinc-400 font-mono-code">
               <span className="text-yellow-400/90 font-medium">COMMUNITY // YELLOW ZONE</span>
               <span className="text-zinc-600">|</span>
-              <span className="text-emerald-400/90 font-bold">TEAM: {teamId || 'OPERATOR'}</span>
+              {teamId ? (
+                <span className="text-emerald-400/90 font-bold">TEAM: {teamId}</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    sound.playClick();
+                    const entered = window.prompt("Enter your official Team ID (e.g. TECHTEAM10923):");
+                    if (entered && entered.trim()) {
+                      const clean = entered.trim().toUpperCase();
+                      sessionStorage.setItem("manu_team_id", clean);
+                      localStorage.setItem("manu_team_id", clean);
+                      const url = new URL(window.location.href);
+                      url.searchParams.set("team", clean);
+                      window.location.href = url.toString();
+                    }
+                  }}
+                  className="text-amber-400 font-bold underline hover:text-amber-300 cursor-pointer"
+                  title="Click to set your official Team ID"
+                >
+                  TEAM: OPERATOR [SET TEAM ID]
+                </button>
+              )}
               <span className="text-zinc-600">|</span>
               <span className="text-zinc-500">CYCLE {cycleVal} // {timeString}</span>
               {onReturnToGate && (
